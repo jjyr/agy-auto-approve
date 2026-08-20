@@ -64,6 +64,10 @@ python3 /path/to/agy-auto-approve/scripts/register_hook.py
   ```bash
   agy plugin list
   ```
+- **Real-Time Audit Log (Watch auto-approvals live)**:
+  ```bash
+  tail -f ~/.gemini/antigravity-cli/auto-approve.log
+  ```
 - **Validate plugin health**:
   ```bash
   agy plugin validate /path/to/agy-auto-approve
