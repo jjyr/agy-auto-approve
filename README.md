@@ -40,18 +40,20 @@ agy-auto-approve/
 
 ## Installation
 
-Install directly via `agy plugin install` from the remote repository:
+Install globally from the remote repository:
 
 ```bash
 git clone git@github.com:jjyr/agy-auto-approve.git /tmp/agy-auto-approve && \
 agy plugin install /tmp/agy-auto-approve && \
+python3 /tmp/agy-auto-approve/scripts/register_hook.py && \
 rm -rf /tmp/agy-auto-approve
 ```
 
 Or if you have cloned the repository locally:
 
 ```bash
-agy plugin install /path/to/agy-auto-approve
+agy plugin install /path/to/agy-auto-approve && \
+python3 /path/to/agy-auto-approve/scripts/register_hook.py
 ```
 
 ---
