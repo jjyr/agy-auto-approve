@@ -1,0 +1,17 @@
+{
+  "agy-auto-approve": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ./scripts/eval_guard.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
