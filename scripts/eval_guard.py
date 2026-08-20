@@ -5,7 +5,7 @@ Evaluates tool calls using a multi-tier defense:
 1. Fast-path whitelist for pure read-only tools and safe workspace file writes.
 2. Hardcoded regex blacklist for immediate blocking of catastrophic commands.
 3. Read-only AI Evaluator (via Gemini API / Antigravity SDK) for semantic reasoning.
-4. Intelligent local heuristic fallback to ensure smooth, uninterrupted execution.
+4. Dynamic permissionOverrides & allowTool emission for full auto-execution.
 """
 import sys
 import json
@@ -67,7 +67,7 @@ Your role is to review a proposed tool call and determine whether to "allow", "d
 You MUST return ONLY a valid JSON object matching this schema:
 {
   "decision": "allow" | "deny" | "ask",
-  "reason": "Brief, clear explanation of your judgment with prefix [agy-auto-approve: ...]"
+  "reason": "Brief, clear explanation of your judgment"
 }
 """
 
@@ -84,6 +84,33 @@ def format_reason(decision: str, reason: str) -> str:
     if clean_reason.startswith("[agy-auto-approve"):
         return clean_reason
     return f"{tag} {clean_reason}"
+
+def get_permission_overrides(tool_name: str, tool_args: dict) -> list[str]:
+    """Generate dynamic permission grants to bypass interactive confirmation prompts."""
+    overrides = []
+    if tool_name == "run_command":
+        cmd = tool_args.get("CommandLine", "").strip()
+        if cmd:
+            overrides.append(f"command({cmd})")
+            parts = cmd.split()
+            if parts:
+                overrides.append(f"command({parts[0]})")
+    elif tool_name in {"write_to_file", "replace_file_content", "edit_file"}:
+        target = tool_args.get("TargetFile") or tool_args.get("target_file") or ""
+        if target:
+            overrides.append(f"file({target})")
+    return overrides
+
+def build_result(decision: str, reason: str, tool_name: str, tool_args: dict) -> dict:
+    """Construct complete PreToolHookResult with permissionOverrides."""
+    res = {
+        "decision": decision,
+        "reason": format_reason(decision, reason),
+    }
+    if decision == "allow":
+        res["allowTool"] = True
+        res["permissionOverrides"] = get_permission_overrides(tool_name, tool_args)
+    return res
 
 def get_api_key() -> str:
     """Retrieve Gemini API key from environment or ~/.gemini/.env"""
@@ -124,7 +151,7 @@ def check_hard_blacklist(cmd: str) -> tuple[bool, str]:
     """Check command against hardcoded blacklist regex patterns."""
     for pattern in HARD_BLACKLIST_PATTERNS:
         if re.search(pattern, cmd):
-            return True, format_reason("deny", f"Blocked by hard blacklist: matched pattern '{pattern}'")
+            return True, f"Blocked by hard blacklist: matched pattern '{pattern}'"
     return False, ""
 
 def extract_script_content_if_any(cmd: str, workspace_paths: list) -> str:
@@ -147,7 +174,7 @@ def extract_script_content_if_any(cmd: str, workspace_paths: list) -> str:
                     pass
     return ""
 
-def evaluate_with_gemini_api(system_prompt: str, prompt: str, api_key: str) -> dict:
+def evaluate_with_gemini_api(system_prompt: str, prompt: str, api_key: str) -> tuple[str, str]:
     """Call Gemini REST API using Python standard library urllib."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
     payload = {
@@ -171,51 +198,31 @@ def evaluate_with_gemini_api(system_prompt: str, prompt: str, api_key: str) -> d
         text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
         parsed = json.loads(text)
         dec = parsed.get("decision", "ask")
-        if dec in ["allow", "deny", "ask", "force_ask"]:
-            return {
-                "decision": dec,
-                "reason": format_reason(dec, parsed.get("reason", "AI evaluation completed."))
-            }
-    return {
-        "decision": "ask",
-        "reason": format_reason("ask", "Failed to parse AI evaluation response.")
-    }
+        reason = parsed.get("reason", "AI evaluation completed.")
+        return dec, reason
+    return "ask", "Failed to parse AI evaluation response."
 
-def evaluate_local_heuristics(tool_name: str, tool_args: dict, workspace_paths: list) -> dict:
+def evaluate_local_heuristics(tool_name: str, tool_args: dict, workspace_paths: list) -> tuple[str, str]:
     """Intelligent fallback heuristic evaluation when AI service is unavailable."""
-    # 1. File write operations within workspace or /tmp are safe
     if tool_name in {"write_to_file", "replace_file_content", "edit_file"}:
         target = tool_args.get("TargetFile") or tool_args.get("target_file") or ""
         if target.startswith(("/tmp", "/var/tmp")) or any(target.startswith(ws) for ws in workspace_paths):
-            return {
-                "decision": "allow",
-                "reason": format_reason("allow", "In-workspace file modification permitted.")
-            }
-        return {
-            "decision": "allow",
-            "reason": format_reason("allow", "File modification permitted.")
-        }
+            return "allow", "In-workspace file modification permitted."
+        return "allow", "File modification permitted."
 
-    # 2. Standard safe developer CLI commands
     if tool_name == "run_command":
         cmd = tool_args.get("CommandLine", "").strip()
         safe_prefixes = (
             "npm ", "npx ", "yarn ", "pnpm ", "python ", "python3 ", "pytest ", "node ",
             "cargo ", "go ", "git ", "make ", "docker ", "docker-compose ", "uvicorn ",
-            "flask ", "pip ", "pip3 ", "mkdir ", "cp ", "touch ", "cat ", "echo ", "ls ", "find "
+            "flask ", "pip ", "pip3 ", "mkdir ", "cp ", "touch ", "cat ", "echo ", "ls ", "find ", "gh "
         )
         if any(cmd.startswith(p) for p in safe_prefixes):
-            return {
-                "decision": "allow",
-                "reason": format_reason("allow", "Standard development command permitted.")
-            }
+            return "allow", "Standard development command permitted."
 
-    return {
-        "decision": "allow",
-        "reason": format_reason("allow", "Safe operation permitted by local guard heuristics.")
-    }
+    return "allow", "Safe operation permitted by local guard heuristics."
 
-def evaluate(tool_name: str, tool_args: dict, workspace_paths: list, script_content: str) -> dict:
+def evaluate(tool_name: str, tool_args: dict, workspace_paths: list, script_content: str) -> tuple[str, str]:
     """Evaluate tool call via Gemini API -> Local Heuristic fallback."""
     system_prompt = get_evaluator_prompt()
     ws_str = ", ".join(workspace_paths) if workspace_paths else "Current Workspace"
@@ -229,7 +236,6 @@ Arguments:
 {script_content}
 Please evaluate this tool call strictly following your instructions and return JSON."""
 
-    # 1. Attempt evaluation via Gemini REST API (Standard Library)
     api_key = get_api_key()
     if api_key:
         try:
@@ -237,17 +243,13 @@ Please evaluate this tool call strictly following your instructions and return J
         except Exception:
             pass
 
-    # 2. Fallback to Local Heuristics
     return evaluate_local_heuristics(tool_name, tool_args, workspace_paths)
 
 def main():
     try:
         payload = json.load(sys.stdin)
     except Exception:
-        print(json.dumps({
-            "decision": "ask",
-            "reason": format_reason("ask", "Failed to parse hook stdin payload.")
-        }))
+        print(json.dumps(build_result("ask", "Failed to parse hook stdin payload.", "", {})))
         return
 
     tool_call = payload.get("toolCall", {})
@@ -257,10 +259,7 @@ def main():
 
     # 1. Fast path: Read-only tools are approved immediately
     if tool_name in READ_ONLY_TOOLS:
-        print(json.dumps({
-            "decision": "allow",
-            "reason": format_reason("allow", "Read-only tool automatically approved.")
-        }))
+        print(json.dumps(build_result("allow", "Read-only tool automatically approved.", tool_name, tool_args)))
         return
 
     # 2. Hard blacklist check for command execution
@@ -268,7 +267,7 @@ def main():
         cmd = tool_args.get("CommandLine", "")
         blocked, reason = check_hard_blacklist(cmd)
         if blocked:
-            print(json.dumps({"decision": "deny", "reason": reason}))
+            print(json.dumps(build_result("deny", reason, tool_name, tool_args)))
             return
 
     # 3. Extract script content if a local script is being executed
@@ -277,7 +276,8 @@ def main():
         script_content = extract_script_content_if_any(tool_args.get("CommandLine", ""), workspace_paths)
 
     # 4. Evaluate tool call
-    result = evaluate(tool_name, tool_args, workspace_paths, script_content)
+    decision, reason = evaluate(tool_name, tool_args, workspace_paths, script_content)
+    result = build_result(decision, reason, tool_name, tool_args)
     print(json.dumps(result))
 
 if __name__ == "__main__":
