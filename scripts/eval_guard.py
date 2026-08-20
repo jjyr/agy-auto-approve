@@ -67,9 +67,23 @@ Your role is to review a proposed tool call and determine whether to "allow", "d
 You MUST return ONLY a valid JSON object matching this schema:
 {
   "decision": "allow" | "deny" | "ask",
-  "reason": "Brief, clear explanation of your judgment"
+  "reason": "Brief, clear explanation of your judgment with prefix [agy-auto-approve: ...]"
 }
 """
+
+def format_reason(decision: str, reason: str) -> str:
+    """Ensure standard [agy-auto-approve: TAG] prefix in reason."""
+    tag_map = {
+        "allow": "[agy-auto-approve: ALLOWED]",
+        "deny": "[agy-auto-approve: DENIED]",
+        "ask": "[agy-auto-approve: REVIEW REQUIRED]",
+        "force_ask": "[agy-auto-approve: REVIEW REQUIRED]"
+    }
+    tag = tag_map.get(decision, "[agy-auto-approve]")
+    clean_reason = reason.strip()
+    if clean_reason.startswith("[agy-auto-approve"):
+        return clean_reason
+    return f"{tag} {clean_reason}"
 
 def get_api_key() -> str:
     """Retrieve Gemini API key from environment or ~/.gemini/.env"""
@@ -110,7 +124,7 @@ def check_hard_blacklist(cmd: str) -> tuple[bool, str]:
     """Check command against hardcoded blacklist regex patterns."""
     for pattern in HARD_BLACKLIST_PATTERNS:
         if re.search(pattern, cmd):
-            return True, f"Blocked by agy-auto-approve hard blacklist: matched rule '{pattern}'"
+            return True, format_reason("deny", f"Blocked by hard blacklist: matched pattern '{pattern}'")
     return False, ""
 
 def extract_script_content_if_any(cmd: str, workspace_paths: list) -> str:
@@ -156,9 +170,16 @@ def evaluate_with_gemini_api(system_prompt: str, prompt: str, api_key: str) -> d
         res = json.loads(resp.read().decode("utf-8"))
         text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
         parsed = json.loads(text)
-        if parsed.get("decision") in ["allow", "deny", "ask", "force_ask"]:
-            return parsed
-    return {"decision": "ask", "reason": "Failed to parse API response"}
+        dec = parsed.get("decision", "ask")
+        if dec in ["allow", "deny", "ask", "force_ask"]:
+            return {
+                "decision": dec,
+                "reason": format_reason(dec, parsed.get("reason", "AI evaluation completed."))
+            }
+    return {
+        "decision": "ask",
+        "reason": format_reason("ask", "Failed to parse AI evaluation response.")
+    }
 
 def evaluate_local_heuristics(tool_name: str, tool_args: dict, workspace_paths: list) -> dict:
     """Intelligent fallback heuristic evaluation when AI service is unavailable."""
@@ -166,8 +187,14 @@ def evaluate_local_heuristics(tool_name: str, tool_args: dict, workspace_paths: 
     if tool_name in {"write_to_file", "replace_file_content", "edit_file"}:
         target = tool_args.get("TargetFile") or tool_args.get("target_file") or ""
         if target.startswith(("/tmp", "/var/tmp")) or any(target.startswith(ws) for ws in workspace_paths):
-            return {"decision": "allow", "reason": "In-workspace file modification allowed"}
-        return {"decision": "allow", "reason": "File modification allowed"}
+            return {
+                "decision": "allow",
+                "reason": format_reason("allow", "In-workspace file modification permitted.")
+            }
+        return {
+            "decision": "allow",
+            "reason": format_reason("allow", "File modification permitted.")
+        }
 
     # 2. Standard safe developer CLI commands
     if tool_name == "run_command":
@@ -178,12 +205,18 @@ def evaluate_local_heuristics(tool_name: str, tool_args: dict, workspace_paths: 
             "flask ", "pip ", "pip3 ", "mkdir ", "cp ", "touch ", "cat ", "echo ", "ls ", "find "
         )
         if any(cmd.startswith(p) for p in safe_prefixes):
-            return {"decision": "allow", "reason": "Standard development command allowed"}
+            return {
+                "decision": "allow",
+                "reason": format_reason("allow", "Standard development command permitted.")
+            }
 
-    return {"decision": "allow", "reason": "Auto-approved by local guard"}
+    return {
+        "decision": "allow",
+        "reason": format_reason("allow", "Safe operation permitted by local guard heuristics.")
+    }
 
 def evaluate(tool_name: str, tool_args: dict, workspace_paths: list, script_content: str) -> dict:
-    """Evaluate tool call via Gemini API -> SDK -> Local Heuristic fallback."""
+    """Evaluate tool call via Gemini API -> Local Heuristic fallback."""
     system_prompt = get_evaluator_prompt()
     ws_str = ", ".join(workspace_paths) if workspace_paths else "Current Workspace"
     prompt = f"""[Environment Context]
@@ -204,14 +237,17 @@ Please evaluate this tool call strictly following your instructions and return J
         except Exception:
             pass
 
-    # 2. Fallback to Local Heuristics (Always fast & reliable)
+    # 2. Fallback to Local Heuristics
     return evaluate_local_heuristics(tool_name, tool_args, workspace_paths)
 
 def main():
     try:
         payload = json.load(sys.stdin)
     except Exception:
-        print(json.dumps({"decision": "ask", "reason": "Failed to parse hook stdin payload"}))
+        print(json.dumps({
+            "decision": "ask",
+            "reason": format_reason("ask", "Failed to parse hook stdin payload.")
+        }))
         return
 
     tool_call = payload.get("toolCall", {})
@@ -221,7 +257,10 @@ def main():
 
     # 1. Fast path: Read-only tools are approved immediately
     if tool_name in READ_ONLY_TOOLS:
-        print(json.dumps({"decision": "allow", "reason": "Read-only tool automatically approved"}))
+        print(json.dumps({
+            "decision": "allow",
+            "reason": format_reason("allow", "Read-only tool automatically approved.")
+        }))
         return
 
     # 2. Hard blacklist check for command execution
