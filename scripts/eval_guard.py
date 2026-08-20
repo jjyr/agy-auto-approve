@@ -25,24 +25,20 @@ READ_ONLY_TOOLS = {
 # 2. Hardcoded Blacklist (0-latency defense against catastrophic commands)
 HARD_BLACKLIST_PATTERNS = [
     # Prohibit root / home / system-level directory deletion
-    r"rm\s+-[rfRF]*\s+/\s*$",
-    r"rm\s+-[rfRF]*\s+/\*",
-    r"rm\s+-[rfRF]*\s+~",
-    r"rm\s+-[rfRF]*\s+\$HOME",
-    r"rm\s+-[rfRF]*\s+/etc",
-    r"rm\s+-[rfRF]*\s+/usr",
-    r"rm\s+-[rfRF]*\s+/var",
-    r"rm\s+-[rfRF]*\s+/bin",
-    r"rm\s+-[rfRF]*\s+/System",
+    r"(?:^|[;&|\n])\s*rm\s+-[rfRF]*\s+/(?:\*|\s*$)",
+    r"(?:^|[;&|\n])\s*rm\s+-[rfRF]*\s+~/(?:\*|\s*$)",
+    r"(?:^|[;&|\n])\s*rm\s+-[rfRF]*\s+~(?:\s+|$)",
+    r"(?:^|[;&|\n])\s*rm\s+-[rfRF]*\s+\$HOME/(?:\*|\s*$)",
+    r"(?:^|[;&|\n])\s*rm\s+-[rfRF]*\s+\$HOME(?:\s+|$)",
+    r"(?:^|[;&|\n])\s*rm\s+-[rfRF]*\s+/(?:etc|usr|var|bin|System|boot|sbin)(?:/|\s+|$)",
     # Prohibit deletion of .git repository metadata
-    r"rm\s+-[rfRF]*\s+.*\.git(\b|/)",
-    r"rm\s+-[rfRF]*\s+\.git",
+    r"(?:^|[;&|\n])\s*rm\s+-[rfRF]*\s+(?:.*/)?\.git(?:/|\s+|$)",
     # Destructive disk / permission / fork bomb patterns
     r"\bmkfs\b",
     r"\bfdisk\b",
     r"\bdd\s+if=",
     r":\(\)\{\s*:\|:&\s*\};:",
-    r"chmod\s+-[rwxRWX0-7]*\s+777\s+/",
+    r"(?:^|[;&|\n])\s*chmod\s+-[rwxRWX0-7]*\s+777\s+/",
 ]
 
 # 3. Default Evaluator Prompt (Can be overridden via AGY_AUTO_APPROVE_PROMPT or custom prompt file)

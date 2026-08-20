@@ -40,11 +40,36 @@ agy-auto-approve/
 
 ## Installation
 
-To install this plugin globally for all projects on your machine, clone the repository into Antigravity’s global plugin directory:
+Install directly via `agy plugin install` from the remote repository:
 
 ```bash
-git clone git@github.com:jjyr/agy-auto-approve.git ~/.gemini/config/plugins/agy-auto-approve
+git clone git@github.com:jjyr/agy-auto-approve.git /tmp/agy-auto-approve && \
+agy plugin install /tmp/agy-auto-approve && \
+rm -rf /tmp/agy-auto-approve
 ```
+
+Or if you have cloned the repository locally:
+
+```bash
+agy plugin install /path/to/agy-auto-approve
+```
+
+---
+
+## Management & Verification
+
+- **List active plugins**:
+  ```bash
+  agy plugin list
+  ```
+- **Validate plugin health**:
+  ```bash
+  agy plugin validate /path/to/agy-auto-approve
+  ```
+- **Uninstall plugin**:
+  ```bash
+  agy plugin uninstall agy-auto-approve
+  ```
 
 ---
 
