@@ -6,11 +6,13 @@ Evaluates tool calls using a multi-tier defense:
 2. Hardcoded regex blacklist for immediate blocking of catastrophic commands.
 3. Read-only AI Evaluator (via Gemini API / Antigravity SDK) for semantic reasoning.
 4. Dynamic permissionOverrides & allowTool emission for full auto-execution.
+5. Real-time visible terminal notifications & persistent audit log (~/.gemini/antigravity-cli/auto-approve.log).
 """
 import sys
 import json
 import os
 import re
+import datetime
 import urllib.request
 import urllib.error
 
@@ -71,6 +73,35 @@ You MUST return ONLY a valid JSON object matching this schema:
 }
 """
 
+def log_audit(decision: str, tool_name: str, tool_args: dict, reason: str):
+    """Write an audit log entry to ~/.gemini/antigravity-cli/auto-approve.log and stderr."""
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    arg_summary = ""
+    if tool_name == "run_command":
+        arg_summary = f'cmd="{tool_args.get("CommandLine", "")}"'
+    elif "TargetFile" in tool_args:
+        arg_summary = f'file="{tool_args.get("TargetFile")}"'
+    else:
+        arg_summary = json.dumps(tool_args, ensure_ascii=False)
+
+    log_line = f"[{now}] [{decision.upper():<5}] tool={tool_name} | {arg_summary} | reason={reason}\n"
+    
+    # 1. Write to persistent audit log
+    log_dir = os.path.expanduser("~/.gemini/antigravity-cli")
+    os.makedirs(log_dir, exist_ok=True)
+    try:
+        with open(os.path.join(log_dir, "auto-approve.log"), "a", encoding="utf-8") as f:
+            f.write(log_line)
+    except Exception:
+        pass
+
+    # 2. Print visible colored notification to stderr for real-time visibility
+    color = "\033[32m" if decision == "allow" else ("\033[31m" if decision == "deny" else "\033[33m")
+    reset = "\033[0m"
+    emoji = "⚡" if decision == "allow" else ("🛑" if decision == "deny" else "⚠️")
+    sys.stderr.write(f"\n{color}{emoji} [agy-auto-approve: {decision.upper()}]{reset} {tool_name} -> {reason}\n")
+    sys.stderr.flush()
+
 def format_reason(decision: str, reason: str) -> str:
     """Ensure standard [agy-auto-approve: TAG] prefix in reason."""
     tag_map = {
@@ -102,10 +133,13 @@ def get_permission_overrides(tool_name: str, tool_args: dict) -> list[str]:
     return overrides
 
 def build_result(decision: str, reason: str, tool_name: str, tool_args: dict) -> dict:
-    """Construct complete PreToolHookResult with permissionOverrides."""
+    """Construct complete PreToolHookResult with permissionOverrides and audit logging."""
+    clean_reason = format_reason(decision, reason)
+    log_audit(decision, tool_name, tool_args, clean_reason)
+    
     res = {
         "decision": decision,
-        "reason": format_reason(decision, reason),
+        "reason": clean_reason,
     }
     if decision == "allow":
         res["allowTool"] = True
