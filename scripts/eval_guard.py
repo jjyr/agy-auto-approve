@@ -15,8 +15,6 @@ import re
 import shlex
 import subprocess
 import datetime
-import urllib.request
-import urllib.error
 
 # Default Model Configuration for AI Evaluation
 DEFAULT_MODEL = "gemini-3.7-flash"
@@ -253,22 +251,6 @@ def build_result(decision: str, reason: str, tool_name: str, tool_args: dict) ->
     log_audit(decision, tool_name, clean_reason)
     return res
 
-def get_api_key() -> str:
-    """Retrieve Gemini API key from environment or ~/.gemini/.env"""
-    if os.environ.get("GEMINI_API_KEY"):
-        return os.environ["GEMINI_API_KEY"]
-    env_path = os.path.expanduser("~/.gemini/.env")
-    if os.path.exists(env_path):
-        try:
-            with open(env_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("GEMINI_API_KEY="):
-                        return line.split("=", 1)[1].strip("\"'")
-        except Exception:
-            pass
-    return ""
-
 def get_evaluator_prompt() -> str:
     """Retrieves the active evaluator prompt with priority override."""
     if os.environ.get("AGY_AUTO_APPROVE_PROMPT"):
@@ -382,36 +364,8 @@ def evaluate_with_agy_cli(system_prompt: str, prompt: str) -> tuple[str, str]:
         pass
     return "ask", "AI evaluation via agy was unavailable or timed out."
 
-def evaluate_with_gemini_api(system_prompt: str, prompt: str, api_key: str) -> tuple[str, str]:
-    """Call Gemini REST API using Python standard library urllib as secondary fallback."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-    payload = {
-        "systemInstruction": {
-            "parts": [{"text": system_prompt}]
-        },
-        "contents": [{
-            "parts": [{"text": prompt}]
-        }],
-        "generationConfig": {
-            "responseMimeType": "application/json"
-        }
-    }
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"}
-    )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        res = json.loads(resp.read().decode("utf-8"))
-        text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
-        parsed = json.loads(text)
-        dec = parsed.get("decision", "ask")
-        reason = parsed.get("reason", "AI evaluation completed via Gemini API.")
-        return dec, reason
-    return "ask", "Failed to parse AI evaluation response."
-
 def evaluate(tool_name: str, tool_args: dict, workspace_paths: list, script_content: str) -> tuple[str, str]:
-    """Evaluate tool call via agy CLI -> Gemini REST API fallback -> Ask."""
+    """Evaluate tool call safety via agy CLI."""
     system_prompt = get_evaluator_prompt()
     ws_str = ", ".join(workspace_paths) if workspace_paths else "Current Workspace"
     prompt = f"""[Environment Context]
@@ -424,20 +378,7 @@ Arguments:
 {script_content}
 Please evaluate this tool call strictly following your instructions and return JSON."""
 
-    # 1. Primary: Evaluate via agy CLI
-    dec, reason = evaluate_with_agy_cli(system_prompt, prompt)
-    if dec in {"allow", "deny"}:
-        return dec, reason
-
-    # 2. Secondary fallback: Gemini REST API if key is available
-    api_key = get_api_key()
-    if api_key:
-        try:
-            return evaluate_with_gemini_api(system_prompt, prompt, api_key)
-        except Exception:
-            pass
-
-    return "ask", reason or "Safety evaluation requires user review."
+    return evaluate_with_agy_cli(system_prompt, prompt)
 
 def main():
     try:

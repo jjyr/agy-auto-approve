@@ -59,16 +59,6 @@ You can customize the evaluation prompt without modifying source code. Overrides
 
 ---
 
-## Optional Gemini API Key Configuration
-
-To enable Gemini-based semantic guard evaluation, set your API key (if unset, the plugin falls back to local heuristic rules):
-```bash
-export GEMINI_API_KEY="your-api-key"
-# Or write into ~/.gemini/.env
-```
-
----
-
 ## License
 
 MIT
