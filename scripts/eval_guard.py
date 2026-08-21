@@ -13,9 +13,15 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import datetime
 import urllib.request
 import urllib.error
+
+# Default Model Configuration for AI Evaluation
+DEFAULT_MODEL = "gemini-3.7-flash"
+DEFAULT_EFFORT = "low"
+MAX_COMMAND_OVERRIDE_LENGTH = 100
 
 # 1. Read-only tools whitelist (Instant pass-through)
 READ_ONLY_TOOLS = {
@@ -74,22 +80,10 @@ You MUST return ONLY a valid JSON object matching this schema:
 }
 """
 
-def log_audit(decision: str, tool_name: str, tool_args: dict, reason: str, permission_overrides: list):
+def log_audit(decision: str, tool_name: str, reason: str):
     """Write an audit log entry to ~/.gemini/antigravity-cli/auto-approve.log and stderr."""
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    arg_summary = ""
-    if tool_name == "run_command":
-        arg_summary = f'cmd="{tool_args.get("CommandLine", "")}"'
-    elif "TargetFile" in tool_args:
-        arg_summary = f'file="{tool_args.get("TargetFile")}"'
-    else:
-        arg_summary = json.dumps(tool_args, ensure_ascii=False)
-
-    permission_summary = ""
-    if permission_overrides is not None:
-        permission_summary = json.dumps(permission_overrides, ensure_ascii=False)
-
-    log_line = f"[{now}] [{decision.upper():<5}] tool={tool_name} | {arg_summary} | reason={reason} | overrides={permission_summary}\n"
+    log_line = f"[{now}] [{decision.upper():<5}] tool={tool_name} | reason={reason}\n"
     
     # 1. Write to persistent audit log
     log_dir = os.path.expanduser("~/.gemini/antigravity-cli")
@@ -121,41 +115,100 @@ def format_reason(decision: str, reason: str) -> str:
         return clean_reason
     return f"{tag} {clean_reason}"
 
-SHELL_COMMAND_SEPARATORS = {";", "\n", "&&", "||", "|", "|&", "&"}
-
 def extract_shell_commands(cmd_str: str) -> list[str]:
-    """Parse shell command string into individual sub-commands (for compound commands/pipelines)."""
+    """Parse shell command string into individual sub-commands preserving exact sub-command strings."""
     if not cmd_str or not cmd_str.strip():
         return []
-    try:
-        lexer = shlex.shlex(cmd_str, posix=True, punctuation_chars=True)
-        tokens = list(lexer)
-    except Exception:
-        parts = [p.strip() for p in re.split(r";|&&|\|\||\||\n|&", cmd_str) if p.strip()]
-        return parts or [cmd_str]
-
     commands = []
-    current_cmd = []
-    for t in tokens:
-        if t in SHELL_COMMAND_SEPARATORS:
-            if current_cmd:
-                commands.append(" ".join(current_cmd))
-                current_cmd = []
-        else:
-            current_cmd.append(t)
-    if current_cmd:
-        commands.append(" ".join(current_cmd))
+    current = []
+    in_single = False
+    in_double = False
+    i = 0
+    n = len(cmd_str)
 
-    valid_cmds = [c for c in commands if c.strip()]
-    return valid_cmds or [cmd_str]
+    while i < n:
+        char = cmd_str[i]
+        if char == "\\":
+            current.append(char)
+            if i + 1 < n:
+                i += 1
+                current.append(cmd_str[i])
+            i += 1
+            continue
+        elif char == "'" and not in_double:
+            in_single = not in_single
+            current.append(char)
+            i += 1
+            continue
+        elif char == '"' and not in_single:
+            in_double = not in_double
+            current.append(char)
+            i += 1
+            continue
+
+        if not in_single and not in_double:
+            if i + 1 < n and cmd_str[i:i+2] in ("&&", "||", "|&"):
+                cmd_part = "".join(current).strip()
+                if cmd_part:
+                    commands.append(cmd_part)
+                current = []
+                i += 2
+                continue
+            elif char in (";", "\n", "|"):
+                cmd_part = "".join(current).strip()
+                if cmd_part:
+                    commands.append(cmd_part)
+                current = []
+                i += 1
+                continue
+            elif char == "&":
+                prev_char = cmd_str[i-1] if i > 0 else ""
+                next_char = cmd_str[i+1] if i + 1 < n else ""
+                if prev_char in (">", "<") or next_char == ">":
+                    current.append(char)
+                    i += 1
+                    continue
+                else:
+                    cmd_part = "".join(current).strip()
+                    if cmd_part:
+                        commands.append(cmd_part)
+                    current = []
+                    i += 1
+                    continue
+
+        current.append(char)
+        i += 1
+
+    cmd_part = "".join(current).strip()
+    if cmd_part:
+        commands.append(cmd_part)
+
+    return commands or [cmd_str]
+
+def format_single_command_override(cmd: str) -> str:
+    """Format a sub-command into a permission override, truncating to command prefix if too long."""
+    cmd = cmd.strip()
+    if not cmd:
+        return ""
+    if len(cmd) <= MAX_COMMAND_OVERRIDE_LENGTH:
+        return f"command({cmd})"
+    tokens = cmd.split()
+    if tokens:
+        return f"command({tokens[0]})"
+    return f"command({cmd[:MAX_COMMAND_OVERRIDE_LENGTH]})"
 
 def get_permission_overrides(tool_name: str, tool_args: dict) -> list[str]:
     """Generate dynamic permission grants to bypass interactive confirmation prompts."""
     overrides = []
     if tool_name == "run_command":
-        cmd = tool_args.get("CommandLine", "").strip()
-        num_commands = max(1, len(extract_shell_commands(cmd)))
-        overrides.extend(["command(*)"] * num_commands)
+        raw_cmd = tool_args.get("CommandLine", "").strip()
+        sub_cmds = extract_shell_commands(raw_cmd)
+        if not sub_cmds and raw_cmd:
+            sub_cmds = [raw_cmd]
+        for sc in sub_cmds:
+            entry = format_single_command_override(sc)
+            if entry:
+                overrides.append(entry)
     elif tool_name in {"write_to_file", "replace_file_content", "edit_file"}:
         target = tool_args.get("TargetFile") or tool_args.get("target_file") or ""
         if target:
@@ -177,7 +230,7 @@ def build_result(decision: str, reason: str, tool_name: str, tool_args: dict) ->
     if permission_overrides is not None:
         res["permissionOverrides"] = permission_overrides
 
-    log_audit(decision, tool_name, tool_args, clean_reason, permission_overrides)
+    log_audit(decision, tool_name, clean_reason)
     return res
 
 def get_api_key() -> str:
@@ -242,8 +295,70 @@ def extract_script_content_if_any(cmd: str, workspace_paths: list) -> str:
                     pass
     return ""
 
+def get_evaluator_model() -> tuple[str, str]:
+    """Retrieve model and effort for agy evaluation with priority overrides."""
+    if os.environ.get("AGY_AUTO_APPROVE_MODEL"):
+        model = os.environ["AGY_AUTO_APPROVE_MODEL"]
+        effort = os.environ.get("AGY_AUTO_APPROVE_EFFORT", DEFAULT_EFFORT)
+        return model, effort
+
+    if os.path.exists(".agents/agy-auto-approve-model.txt"):
+        try:
+            with open(".agents/agy-auto-approve-model.txt", "r", encoding="utf-8") as f:
+                model = f.read().strip()
+                if model:
+                    effort = os.environ.get("AGY_AUTO_APPROVE_EFFORT", DEFAULT_EFFORT)
+                    return model, effort
+        except Exception:
+            pass
+
+    global_model_file = os.path.expanduser("~/.gemini/config/agy-auto-approve-model.txt")
+    if os.path.exists(global_model_file):
+        try:
+            with open(global_model_file, "r", encoding="utf-8") as f:
+                model = f.read().strip()
+                if model:
+                    effort = os.environ.get("AGY_AUTO_APPROVE_EFFORT", DEFAULT_EFFORT)
+                    return model, effort
+        except Exception:
+            pass
+
+    return DEFAULT_MODEL, DEFAULT_EFFORT
+
+def evaluate_with_agy_cli(system_prompt: str, prompt: str) -> tuple[str, str]:
+    """Call agy CLI print mode to evaluate tool call safety with Gemini."""
+    model, effort = get_evaluator_model()
+    full_prompt = f"{system_prompt}\n\n{prompt}"
+    cmd = [
+        "agy",
+        "-p", full_prompt,
+        "--model", model,
+        "--effort", effort,
+        "--disable-slash-commands",
+        "--output-format", "json"
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=25
+        )
+        if proc.returncode == 0 and proc.stdout:
+            data = json.loads(proc.stdout)
+            raw_response = data.get("response", "")
+            json_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw_response)
+            clean_text = json_match.group(1) if json_match else raw_response.strip()
+            parsed = json.loads(clean_text)
+            dec = parsed.get("decision", "ask")
+            reason = parsed.get("reason", "AI evaluation completed via agy.")
+            return dec, reason
+    except Exception:
+        pass
+    return "ask", "AI evaluation via agy was unavailable or timed out."
+
 def evaluate_with_gemini_api(system_prompt: str, prompt: str, api_key: str) -> tuple[str, str]:
-    """Call Gemini REST API using Python standard library urllib."""
+    """Call Gemini REST API using Python standard library urllib as secondary fallback."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
     payload = {
         "systemInstruction": {
@@ -266,32 +381,12 @@ def evaluate_with_gemini_api(system_prompt: str, prompt: str, api_key: str) -> t
         text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
         parsed = json.loads(text)
         dec = parsed.get("decision", "ask")
-        reason = parsed.get("reason", "AI evaluation completed.")
+        reason = parsed.get("reason", "AI evaluation completed via Gemini API.")
         return dec, reason
     return "ask", "Failed to parse AI evaluation response."
 
-def evaluate_local_heuristics(tool_name: str, tool_args: dict, workspace_paths: list) -> tuple[str, str]:
-    """Intelligent fallback heuristic evaluation when AI service is unavailable."""
-    if tool_name in {"write_to_file", "replace_file_content", "edit_file"}:
-        target = tool_args.get("TargetFile") or tool_args.get("target_file") or ""
-        if target.startswith(("/tmp", "/var/tmp")) or any(target.startswith(ws) for ws in workspace_paths):
-            return "allow", "In-workspace file modification permitted."
-        return "allow", "File modification permitted."
-
-    if tool_name == "run_command":
-        cmd = tool_args.get("CommandLine", "").strip()
-        safe_prefixes = (
-            "npm ", "npx ", "yarn ", "pnpm ", "python ", "python3 ", "pytest ", "node ",
-            "cargo ", "go ", "git ", "make ", "docker ", "docker-compose ", "uvicorn ",
-            "flask ", "pip ", "pip3 ", "mkdir ", "cp ", "touch ", "cat ", "echo ", "ls ", "find ", "gh "
-        )
-        if any(cmd.startswith(p) for p in safe_prefixes):
-            return "allow", "Standard development command permitted."
-
-    return "allow", "Safe operation permitted by local guard heuristics."
-
 def evaluate(tool_name: str, tool_args: dict, workspace_paths: list, script_content: str) -> tuple[str, str]:
-    """Evaluate tool call via Gemini API -> Local Heuristic fallback."""
+    """Evaluate tool call via agy CLI -> Gemini REST API fallback -> Ask."""
     system_prompt = get_evaluator_prompt()
     ws_str = ", ".join(workspace_paths) if workspace_paths else "Current Workspace"
     prompt = f"""[Environment Context]
@@ -304,6 +399,12 @@ Arguments:
 {script_content}
 Please evaluate this tool call strictly following your instructions and return JSON."""
 
+    # 1. Primary: Evaluate via agy CLI
+    dec, reason = evaluate_with_agy_cli(system_prompt, prompt)
+    if dec in {"allow", "deny"}:
+        return dec, reason
+
+    # 2. Secondary fallback: Gemini REST API if key is available
     api_key = get_api_key()
     if api_key:
         try:
@@ -311,7 +412,7 @@ Please evaluate this tool call strictly following your instructions and return J
         except Exception:
             pass
 
-    return evaluate_local_heuristics(tool_name, tool_args, workspace_paths)
+    return "ask", reason or "Safety evaluation requires user review."
 
 def main():
     try:
