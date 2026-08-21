@@ -200,6 +200,29 @@ class TestEvalGuard(unittest.TestCase):
         self.assertEqual(res.get("decision"), "allow")
         self.assertEqual(res.get("permissionOverrides"), [f"command({cmd})"])
 
+    def test_killall_command_with_or_true(self):
+        """Test that killall command chained with || true correctly extracts the primary killall sub-command."""
+        cmd = "killall -9 fnn fiber-lsp-sdk-agent ckb ckb-cli || true"
+        extracted = eval_guard.extract_shell_commands(cmd)
+        self.assertEqual(
+            extracted,
+            [
+                "killall -9 fnn fiber-lsp-sdk-agent ckb ckb-cli",
+                "true"
+            ]
+        )
+        self.assertEqual(extracted[0], "killall -9 fnn fiber-lsp-sdk-agent ckb ckb-cli")
+
+        res = self._run_guard("run_command", {"CommandLine": cmd})
+        self.assertEqual(res.get("decision"), "allow")
+        self.assertEqual(
+            res.get("permissionOverrides"),
+            [
+                "command(killall -9 fnn fiber-lsp-sdk-agent ckb ckb-cli)",
+                "command(true)"
+            ]
+        )
+
     def test_file_modification_overrides(self):
         target_file = "/path/to/project/src/index.ts"
         res1 = self._run_guard("write_to_file", {"TargetFile": target_file, "CodeContent": "console.log(1)"})
