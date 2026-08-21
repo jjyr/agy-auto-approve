@@ -5,13 +5,14 @@ Evaluates tool calls using a multi-tier defense:
 1. Fast-path whitelist for pure read-only tools and safe workspace file writes.
 2. Hardcoded regex blacklist for immediate blocking of catastrophic commands.
 3. Read-only AI Evaluator (via Gemini API / Antigravity SDK) for semantic reasoning.
-4. Dynamic permissionOverrides & allowTool emission for full auto-execution.
+4. Dynamic permissionOverrides emission for full auto-execution.
 5. Real-time visible terminal notifications & persistent audit log (~/.gemini/antigravity-cli/auto-approve.log).
 """
 import sys
 import json
 import os
 import re
+import shlex
 import datetime
 import urllib.request
 import urllib.error
@@ -73,7 +74,7 @@ You MUST return ONLY a valid JSON object matching this schema:
 }
 """
 
-def log_audit(decision: str, tool_name: str, tool_args: dict, reason: str):
+def log_audit(decision: str, tool_name: str, tool_args: dict, reason: str, permission_overrides: list):
     """Write an audit log entry to ~/.gemini/antigravity-cli/auto-approve.log and stderr."""
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     arg_summary = ""
@@ -84,7 +85,11 @@ def log_audit(decision: str, tool_name: str, tool_args: dict, reason: str):
     else:
         arg_summary = json.dumps(tool_args, ensure_ascii=False)
 
-    log_line = f"[{now}] [{decision.upper():<5}] tool={tool_name} | {arg_summary} | reason={reason}\n"
+    permission_summary = ""
+    if permission_overrides is not None:
+        permission_summary = json.dumps(permission_overrides, ensure_ascii=False)
+
+    log_line = f"[{now}] [{decision.upper():<5}] tool={tool_name} | {arg_summary} | reason={reason} | overrides={permission_summary}\n"
     
     # 1. Write to persistent audit log
     log_dir = os.path.expanduser("~/.gemini/antigravity-cli")
@@ -116,16 +121,41 @@ def format_reason(decision: str, reason: str) -> str:
         return clean_reason
     return f"{tag} {clean_reason}"
 
+SHELL_COMMAND_SEPARATORS = {";", "\n", "&&", "||", "|", "|&", "&"}
+
+def extract_shell_commands(cmd_str: str) -> list[str]:
+    """Parse shell command string into individual sub-commands (for compound commands/pipelines)."""
+    if not cmd_str or not cmd_str.strip():
+        return []
+    try:
+        lexer = shlex.shlex(cmd_str, posix=True, punctuation_chars=True)
+        tokens = list(lexer)
+    except Exception:
+        parts = [p.strip() for p in re.split(r";|&&|\|\||\||\n|&", cmd_str) if p.strip()]
+        return parts or [cmd_str]
+
+    commands = []
+    current_cmd = []
+    for t in tokens:
+        if t in SHELL_COMMAND_SEPARATORS:
+            if current_cmd:
+                commands.append(" ".join(current_cmd))
+                current_cmd = []
+        else:
+            current_cmd.append(t)
+    if current_cmd:
+        commands.append(" ".join(current_cmd))
+
+    valid_cmds = [c for c in commands if c.strip()]
+    return valid_cmds or [cmd_str]
+
 def get_permission_overrides(tool_name: str, tool_args: dict) -> list[str]:
     """Generate dynamic permission grants to bypass interactive confirmation prompts."""
     overrides = []
     if tool_name == "run_command":
         cmd = tool_args.get("CommandLine", "").strip()
-        if cmd:
-            overrides.append(f"command({cmd})")
-            parts = cmd.split()
-            if parts:
-                overrides.append(f"command({parts[0]})")
+        num_commands = max(1, len(extract_shell_commands(cmd)))
+        overrides.extend(["command(*)"] * num_commands)
     elif tool_name in {"write_to_file", "replace_file_content", "edit_file"}:
         target = tool_args.get("TargetFile") or tool_args.get("target_file") or ""
         if target:
@@ -135,15 +165,19 @@ def get_permission_overrides(tool_name: str, tool_args: dict) -> list[str]:
 def build_result(decision: str, reason: str, tool_name: str, tool_args: dict) -> dict:
     """Construct complete PreToolHookResult with permissionOverrides and audit logging."""
     clean_reason = format_reason(decision, reason)
-    log_audit(decision, tool_name, tool_args, clean_reason)
+    permission_overrides = None
     
     res = {
         "decision": decision,
         "reason": clean_reason,
     }
     if decision == "allow":
-        res["allowTool"] = True
-        res["permissionOverrides"] = get_permission_overrides(tool_name, tool_args)
+        permission_overrides = get_permission_overrides(tool_name, tool_args)
+
+    if permission_overrides is not None:
+        res["permissionOverrides"] = permission_overrides
+
+    log_audit(decision, tool_name, tool_args, clean_reason, permission_overrides)
     return res
 
 def get_api_key() -> str:
