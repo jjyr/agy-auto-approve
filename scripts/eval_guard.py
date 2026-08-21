@@ -4,7 +4,7 @@ agy-auto-approve: PreToolUse Security & Intent Guard
 Evaluates tool calls using a multi-tier defense:
 1. Fast-path whitelist for pure read-only tools and safe workspace file writes.
 2. Hardcoded regex blacklist for immediate blocking of catastrophic commands.
-3. Read-only AI Evaluator (via Gemini API / Antigravity SDK) for semantic reasoning.
+3. Read-only AI Evaluator (via agy CLI) for semantic reasoning.
 4. Dynamic permissionOverrides emission for full auto-execution.
 5. Real-time visible terminal notifications & persistent audit log (~/.gemini/antigravity-cli/auto-approve.log).
 """
