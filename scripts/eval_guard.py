@@ -38,11 +38,9 @@ READ_ONLY_TOOLS = {
 HARD_BLACKLIST_PATTERNS = [
     # Prohibit root / home / system-level directory deletion
     r"(?:^|[;&|\n])\s*rm\s+-[rfRF]*\s+/(?:\*|\s*$)",
-    r"(?:^|[;&|\n])\s*rm\s+-[rfRF]*\s+~/(?:\*|\s*$)",
-    r"(?:^|[;&|\n])\s*rm\s+-[rfRF]*\s+~(?:\s+|$)",
-    r"(?:^|[;&|\n])\s*rm\s+-[rfRF]*\s+\$HOME/(?:\*|\s*$)",
-    r"(?:^|[;&|\n])\s*rm\s+-[rfRF]*\s+\$HOME(?:\s+|$)",
-    r"(?:^|[;&|\n])\s*rm\s+-[rfRF]*\s+/(?:etc|usr|var|bin|System|boot|sbin)(?:/|\s+|$)",
+    r"(?:^|[;&|\n])\s*rm\s+-[rfRF]*\s+~(?:\/.*|\s*$)",
+    r"(?:^|[;&|\n])\s*rm\s+-[rfRF]*\s+\$HOME(?:\/.*|\s*$)",
+    r"(?:^|[;&|\n])\s*rm\s+-[rfRF]*\s+/(?:etc|usr|var|bin|System|boot|sbin|Users|home)(?:/|\s+|$)",
     # Prohibit deletion of .git repository metadata
     r"(?:^|[;&|\n])\s*rm\s+-[rfRF]*\s+(?:.*/)?\.git(?:/|\s+|$)",
     # Destructive disk / permission / fork bomb patterns
@@ -59,17 +57,17 @@ Your role is to review a proposed tool call and determine whether to "allow", "d
 
 ### Allowed Actions:
 1. **Writing to current workspace**: Creating, modifying, or overwriting code/build files within the current workspace directory.
-2. **Reading/Writing temporary directories**: Reading or writing to temporary directories (e.g., /tmp, ~/.tmp, local scratch/cache folders).
+2. **Reading/Writing temporary directories and agent configurations**: Reading or writing to temporary directories (e.g., `/tmp`, `~/.tmp`, local scratch/cache folders) or agent tool configuration directories (`~/.gemini`).
 3. **Starting local dev environments**: Starting dev servers, debugging tools, or build processes (e.g., `npm run dev`, `yarn start`, `python app.py`, `flask run`, `uvicorn`, `cargo run`, `docker compose up`).
 4. **Development script safety inspection**:
    - Inspect script content if provided.
-   - If the script performs standard project setup, compilation, testing, or server launch within workspace/temp paths, it MUST be allowed ("allow").
-   - **If the script attempts to delete, truncate, or modify contents OUTSIDE the workspace directory (except temp dirs), it MUST be strictly denied ("deny").**
+   - If the script performs standard project setup, compilation, testing, server launch, or agent configuration within workspace/temp/~/.gemini paths, it MUST be allowed ("allow").
+   - **If the script attempts to delete, truncate, or modify user files OUTSIDE the workspace directory (except temp dirs and ~/.gemini config), it MUST be strictly denied ("deny").**
 
 ### Denied Actions:
 1. Any command attempting to delete root `/`, user home `~`, or critical system directories.
 2. Any command attempting to delete or corrupt the `.git` repository folder.
-3. Any attempt to delete or alter files outside the workspace directory (excluding temp dirs).
+3. Any attempt to delete or alter user files outside the workspace directory (excluding temp dirs and ~/.gemini config).
 4. Any attempt to exfiltrate sensitive credentials (e.g., `.env`, private keys, authentication tokens) to unauthorized external endpoints.
 
 ### Output Format:
@@ -86,7 +84,7 @@ def log_audit(decision: str, tool_name: str, reason: str):
     log_line = f"[{now}] [{decision.upper():<5}] tool={tool_name} | reason={reason}\n"
     
     # 1. Write to persistent audit log
-    log_dir = os.path.expanduser("~/.gemini/antigravity-cli")
+    log_dir = os.environ.get("AGY_AUTO_APPROVE_LOG_DIR") or os.path.expanduser("~/.gemini/antigravity-cli")
     os.makedirs(log_dir, exist_ok=True)
     try:
         with open(os.path.join(log_dir, "auto-approve.log"), "a", encoding="utf-8") as f:
@@ -95,11 +93,12 @@ def log_audit(decision: str, tool_name: str, reason: str):
         pass
 
     # 2. Print visible colored notification to stderr for real-time visibility
-    color = "\033[32m" if decision == "allow" else ("\033[31m" if decision == "deny" else "\033[33m")
-    reset = "\033[0m"
-    emoji = "⚡" if decision == "allow" else ("🛑" if decision == "deny" else "⚠️")
-    sys.stderr.write(f"\n{color}{emoji} [agy-auto-approve: {decision.upper()}]{reset} {tool_name} -> {reason}\n")
-    sys.stderr.flush()
+    if not os.environ.get("AGY_AUTO_APPROVE_SILENT"):
+        color = "\033[32m" if decision == "allow" else ("\033[31m" if decision == "deny" else "\033[33m")
+        reset = "\033[0m"
+        emoji = "⚡" if decision == "allow" else ("🛑" if decision == "deny" else "⚠️")
+        sys.stderr.write(f"\n{color}{emoji} [agy-auto-approve: {decision.upper()}]{reset} {tool_name} -> {reason}\n")
+        sys.stderr.flush()
 
 def format_reason(decision: str, reason: str) -> str:
     """Ensure standard [agy-auto-approve: TAG] prefix in reason."""
@@ -114,6 +113,27 @@ def format_reason(decision: str, reason: str) -> str:
     if clean_reason.startswith("[agy-auto-approve"):
         return clean_reason
     return f"{tag} {clean_reason}"
+
+ENV_VAR_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*")
+
+def clean_subcommand(cmd: str) -> str:
+    """Strip grouping parentheses/braces and leading environment variables from subcommand."""
+    cmd = cmd.strip()
+    while (cmd.startswith("(") and cmd.endswith(")")) or (cmd.startswith("{") and cmd.endswith("}")):
+        cmd = cmd[1:-1].strip()
+    cmd = cmd.lstrip("(").rstrip(")")
+    
+    tokens = cmd.split()
+    first_cmd_idx = 0
+    while first_cmd_idx < len(tokens) and ENV_VAR_PATTERN.match(tokens[first_cmd_idx]):
+        first_cmd_idx += 1
+        
+    if first_cmd_idx > 0 and first_cmd_idx < len(tokens):
+        cmd = " ".join(tokens[first_cmd_idx:])
+    elif first_cmd_idx >= len(tokens) and tokens:
+        cmd = tokens[-1]
+        
+    return cmd.strip()
 
 def extract_shell_commands(cmd_str: str) -> list[str]:
     """Parse shell command string into individual sub-commands preserving exact sub-command strings."""
@@ -148,14 +168,14 @@ def extract_shell_commands(cmd_str: str) -> list[str]:
 
         if not in_single and not in_double:
             if i + 1 < n and cmd_str[i:i+2] in ("&&", "||", "|&"):
-                cmd_part = "".join(current).strip()
+                cmd_part = clean_subcommand("".join(current))
                 if cmd_part:
                     commands.append(cmd_part)
                 current = []
                 i += 2
                 continue
             elif char in (";", "\n", "|"):
-                cmd_part = "".join(current).strip()
+                cmd_part = clean_subcommand("".join(current))
                 if cmd_part:
                     commands.append(cmd_part)
                 current = []
@@ -169,7 +189,7 @@ def extract_shell_commands(cmd_str: str) -> list[str]:
                     i += 1
                     continue
                 else:
-                    cmd_part = "".join(current).strip()
+                    cmd_part = clean_subcommand("".join(current))
                     if cmd_part:
                         commands.append(cmd_part)
                     current = []
@@ -179,7 +199,7 @@ def extract_shell_commands(cmd_str: str) -> list[str]:
         current.append(char)
         i += 1
 
-    cmd_part = "".join(current).strip()
+    cmd_part = clean_subcommand("".join(current))
     if cmd_part:
         commands.append(cmd_part)
 
@@ -277,7 +297,12 @@ def check_hard_blacklist(cmd: str) -> tuple[bool, str]:
 
 def extract_script_content_if_any(cmd: str, workspace_paths: list) -> str:
     """If the command executes a local script file, extract its content for inspection."""
-    tokens = cmd.strip().split()
+    sub_cmds = extract_shell_commands(cmd)
+    tokens = []
+    for sc in sub_cmds:
+        tokens.extend(sc.split())
+    if not tokens:
+        tokens = cmd.strip().split()
     if not tokens:
         return ""
     script_extensions = (".sh", ".py", ".js", ".ts", ".bash", ".zsh", ".rb", ".mjs", ".cjs")
