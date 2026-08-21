@@ -279,6 +279,37 @@ class TestEvalGuard(unittest.TestCase):
         self.assertEqual(res.get("decision"), "allow")
         self.assertEqual(res.get("permissionOverrides"), ["command(./tests/nodes/start.sh e2e/lsp)"])
 
+    def test_start_script_with_multiple_env_vars(self):
+        """Test start.sh command with multiple environment variables across lines or space-separated."""
+        cmd_multiline = 'REMOVE_OLD_STATE=y\n  PATH="/Users/jjy/.cargo/bin:$PATH"\n  ./tests/nodes/start.sh e2e/lsp'
+        extracted = eval_guard.extract_shell_commands(cmd_multiline)
+        self.assertEqual(extracted, ["./tests/nodes/start.sh e2e/lsp"])
+        self.assertTrue(extracted[0].startswith("./tests/nodes/start.sh"))
+
+        res = self._run_guard("run_command", {"CommandLine": cmd_multiline})
+        self.assertEqual(res.get("decision"), "allow")
+        self.assertEqual(res.get("permissionOverrides"), ["command(./tests/nodes/start.sh e2e/lsp)"])
+
+        # Also verify with backslash line continuation and single-line format
+        cmd_backslash = 'REMOVE_OLD_STATE=y \\\n  PATH="/Users/jjy/.cargo/bin:$PATH" \\\n  ./tests/nodes/start.sh e2e/lsp'
+        self.assertEqual(eval_guard.extract_shell_commands(cmd_backslash), ["./tests/nodes/start.sh e2e/lsp"])
+        cmd_single = 'REMOVE_OLD_STATE=y PATH="/Users/jjy/.cargo/bin:$PATH" ./tests/nodes/start.sh e2e/lsp'
+        self.assertEqual(eval_guard.extract_shell_commands(cmd_single), ["./tests/nodes/start.sh e2e/lsp"])
+
+    def test_wait_script_with_path_env_var(self):
+        """Test wait.sh command with PATH environment variable prefix."""
+        cmd_multiline = 'PATH="/Users/jjy/.cargo/bin:$PATH"\n  ./tests/nodes/wait.sh'
+        extracted = eval_guard.extract_shell_commands(cmd_multiline)
+        self.assertEqual(extracted, ["./tests/nodes/wait.sh"])
+
+        res = self._run_guard("run_command", {"CommandLine": cmd_multiline})
+        self.assertEqual(res.get("decision"), "allow")
+        self.assertEqual(res.get("permissionOverrides"), ["command(./tests/nodes/wait.sh)"])
+
+        # Also verify with single-line format
+        cmd_single = 'PATH="/Users/jjy/.cargo/bin:$PATH" ./tests/nodes/wait.sh'
+        self.assertEqual(eval_guard.extract_shell_commands(cmd_single), ["./tests/nodes/wait.sh"])
+
     def test_model_and_prompt_customization(self):
         model, effort = eval_guard.get_evaluator_model()
         self.assertEqual(model, "gemini-3.7-flash")

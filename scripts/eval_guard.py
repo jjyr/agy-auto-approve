@@ -129,7 +129,7 @@ def clean_subcommand(cmd: str) -> str:
     if first_cmd_idx > 0 and first_cmd_idx < len(tokens):
         cmd = " ".join(tokens[first_cmd_idx:])
     elif first_cmd_idx >= len(tokens) and tokens:
-        cmd = tokens[-1]
+        return ""
         
     return cmd.strip()
 
@@ -147,6 +147,14 @@ def extract_shell_commands(cmd_str: str) -> list[str]:
     while i < n:
         char = cmd_str[i]
         if char == "\\":
+            if i + 1 < n and cmd_str[i+1] == "\n":
+                current.append(" ")
+                i += 2
+                continue
+            elif i + 2 < n and cmd_str[i:i+3] == "\r\n":
+                current.append(" ")
+                i += 3
+                continue
             current.append(char)
             if i + 1 < n:
                 i += 1
@@ -201,7 +209,7 @@ def extract_shell_commands(cmd_str: str) -> list[str]:
     if cmd_part:
         commands.append(cmd_part)
 
-    return commands or [cmd_str]
+    return commands or [cmd_str.strip()]
 
 def format_single_command_override(cmd: str) -> str:
     """Format a sub-command into a permission override, truncating to command prefix if too long."""
