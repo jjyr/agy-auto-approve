@@ -189,6 +189,17 @@ class TestEvalGuard(unittest.TestCase):
             ['command(git commit -m "fix: semicolon ; in message && double ampersand")']
         )
 
+    def test_sed_command_recognition(self):
+        """Test that sed commands with quotes and regex substitutions are accurately recognized."""
+        cmd = "sed -n 's/^  LSP_OPERATOR_TOKEN: //p' tests/bruno/environments/test.bru"
+        extracted = eval_guard.extract_shell_commands(cmd)
+        self.assertEqual(extracted, [cmd])
+        self.assertTrue(extracted[0].startswith("sed"))
+
+        res = self._run_guard("run_command", {"CommandLine": cmd})
+        self.assertEqual(res.get("decision"), "allow")
+        self.assertEqual(res.get("permissionOverrides"), [f"command({cmd})"])
+
     def test_file_modification_overrides(self):
         target_file = "/path/to/project/src/index.ts"
         res1 = self._run_guard("write_to_file", {"TargetFile": target_file, "CodeContent": "console.log(1)"})
