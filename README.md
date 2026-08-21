@@ -1,209 +1,71 @@
 # agy-auto-approve
 
-**agy-auto-approve** is a global security and auto-approval plugin for [Antigravity CLI](https://antigravity.google) (`agy`).
-
-It enables safe, hands-free autonomous workflows by leveraging a **Two-Tier Defense Architecture**:
-1. **Tier 1 (Hard Blacklist)**: Instantly denies catastrophic commands (e.g., `rm -rf /`, `rm -rf .git`, disk formatters, fork bombs) with zero latency.
-2. **Tier 2 (Read-Only LLM Guard)**: Dispatches a read-only Antigravity Agent in a secure sandbox to review proposed tool calls and local script contents before execution.
+为 [Antigravity CLI](https://antigravity.google) (`agy`) 增加智能 **Auto-Approve**（自动审批）能力。
 
 ---
 
-## Key Features
+## 插件功能
 
-- ⚡ **Instant Read-Only Pass-Through**: Read-only tools (`view_file`, `grep_search`, `find_by_name`, `list_dir`, etc.) bypass LLM review and are approved immediately.
-- 🛡️ **Hardcoded Blacklist Protection**:
-  - Blocks deletion of root (`/`), home (`~`), or system directories (`/etc`, `/usr`, `/System`, etc.).
-  - Blocks deletion or corruption of `.git` repository metadata.
-  - Blocks dangerous disk partitioning/formatting tools (`mkfs`, `fdisk`, `dd if=`).
-- 🔍 **Script Inspection & Directory Boundary Guard**:
-  - Automatically extracts and inspects local scripts (e.g., `.sh`, `.py`, `.js`, `.ts`) before execution.
-  - **Allowed**: Writing to the current workspace directory, reading/writing temporary directories (`/tmp`, `~/.tmp`), and launching local development environments (`npm run dev`, `python app.py`, `docker compose up`, etc.).
-  - **Denied**: Any script or command attempting to delete or alter files **outside** the workspace directory.
-- 🦺 **Fail-Safe Fallback**: If the evaluator encounters timeouts or unexpected errors, it automatically falls back to manual user confirmation (`decision: "ask"`).
-- ⚙️ **Customizable Evaluator Prompt**: Easily inspect the default prompt or override it globally, per-workspace, or via environment variables.
+在 Agent 调用工具前（`PreToolUse` Hook）进行自动化安全把关：
+
+1. **只读工具极速放行**：`view_file`、`grep_search`、`find_by_name`、`list_dir` 等无需人工确认直接放行。
+2. **危险命令硬拦截**：对 `rm -rf /`、删 `.git`、磁盘格式化等破坏性指令秒级拦截（`deny`）。
+3. **安全操作自动授权**：对开发环境常用命令及安全修改操作，自动评估并生成精确的 `permissionOverrides`（支持 `;`、`&&` 等复合 Shell 命令的多重授权），跳过交互式确认弹窗。
+4. **实时审计日志**：终端显示审批结果，并在 `~/.gemini/antigravity-cli/auto-approve.log` 记录详细审计日志。
 
 ---
 
-## Directory Structure
+## 安装与使用
 
-```text
-agy-auto-approve/
-├── plugin.json              # Plugin manifest
-├── hooks.json               # PreToolUse lifecycle hook registration
-├── requirements.txt         # Python dependencies (google-antigravity)
-├── scripts/
-│   └── eval_guard.py        # Core evaluation engine (Hard blacklist + LLM guard)
-└── README.md
-```
-
----
-
-## Installation
-
-Install globally from the remote repository:
-
+### 安装
 ```bash
+# 本地安装
+agy plugin install /path/to/agy-auto-approve && \
+python3 /path/to/agy-auto-approve/scripts/register_hook.py
+
+# 或从 GitHub 安装
 git clone git@github.com:jjyr/agy-auto-approve.git /tmp/agy-auto-approve && \
 agy plugin install /tmp/agy-auto-approve && \
 python3 /tmp/agy-auto-approve/scripts/register_hook.py && \
 rm -rf /tmp/agy-auto-approve
 ```
 
-Or if you have cloned the repository locally:
-
-```bash
-agy plugin install /path/to/agy-auto-approve && \
-python3 /path/to/agy-auto-approve/scripts/register_hook.py
-```
+### 常用命令
+- **查看已安装插件**：`agy plugin list`
+- **实时查看自动审批日志**：`tail -f ~/.gemini/antigravity-cli/auto-approve.log`
+- **卸载插件**：`agy plugin uninstall agy-auto-approve`
 
 ---
 
-## Management & Verification
+## Prompt 位置与自定义配置
 
-- **List active plugins**:
-  ```bash
-  agy plugin list
-  ```
-- **Real-Time Audit Log (Watch auto-approvals live)**:
-  ```bash
-  tail -f ~/.gemini/antigravity-cli/auto-approve.log
-  ```
-- **Validate plugin health**:
-  ```bash
-  agy plugin validate /path/to/agy-auto-approve
-  ```
-- **Uninstall plugin**:
-  ```bash
-  agy plugin uninstall agy-auto-approve
-  ```
+### 默认 Prompt 位置
+默认评估 Prompt 位于：  
+👉 **[`scripts/eval_guard.py`](scripts/eval_guard.py)**（变量：`DEFAULT_SYSTEM_PROMPT`）
 
----
+### 如何自定义 Prompt
+无需修改源码，支持通过以下方式覆盖（按优先级从高到低）：
 
-## Prompt Location & Customization
-
-### Default Evaluator Prompt Location
-
-The default system prompt used by the read-only evaluator is located in:
-👉 **[`scripts/eval_guard.py`](scripts/eval_guard.py#L42-L66)** (variable: `DEFAULT_SYSTEM_PROMPT`)
-
-```python
-DEFAULT_SYSTEM_PROMPT = """You are a strict Security & Auto-Approval Evaluator for an AI coding assistant.
-Your role is to review a proposed tool call and determine whether to "allow", "deny", or "ask" (prompt the user for manual confirmation).
-
-### Allowed Actions:
-1. Writing to current workspace: Creating, modifying, or overwriting code/build files within the current workspace directory.
-2. Reading/Writing temporary directories: Reading or writing to temporary directories (e.g., /tmp, ~/.tmp, local scratch/cache folders).
-3. Starting local dev environments: Starting dev servers, debugging tools, or build processes (e.g., npm run dev, yarn start, python app.py, flask run, uvicorn, cargo run, docker compose up).
-4. Development script safety inspection:
-   - Inspect script content if provided.
-   - If the script performs standard project setup, compilation, testing, or server launch within workspace/temp paths, it MUST be allowed ("allow").
-   - If the script attempts to delete, truncate, or modify contents OUTSIDE the workspace directory (except temp dirs), it MUST be strictly denied ("deny").
-
-### Denied Actions:
-1. Any command attempting to delete root `/`, user home `~`, or critical system directories.
-2. Any command attempting to delete or corrupt the `.git` repository folder.
-3. Any attempt to delete or alter files outside the workspace directory (excluding temp dirs).
-4. Any attempt to exfiltrate sensitive credentials (e.g., `.env`, private keys, authentication tokens) to unauthorized external endpoints.
-
-### Output Format:
-You MUST return ONLY a valid JSON object matching this schema:
-{
-  "decision": "allow" | "deny" | "ask",
-  "reason": "Brief, clear explanation of your judgment"
-}
-"""
-```
-
----
-
-### How to Override the Prompt
-
-You can override the evaluator prompt without modifying the source code. Overrides are resolved in the following priority:
-
-#### 1. Via Environment Variable (Highest Priority)
-Set `AGY_AUTO_APPROVE_PROMPT` in your shell profile (`~/.zshrc` or `~/.bashrc`):
-```bash
-export AGY_AUTO_APPROVE_PROMPT="Your custom prompt instructions here..."
-```
-
-#### 2. Via Workspace Custom File (Project-Specific)
-Place a custom prompt in `.agents/agy-auto-approve-prompt.txt` at the root of your project repository:
-```bash
-mkdir -p .agents
-cat << 'EOF' > .agents/agy-auto-approve-prompt.txt
-Your project-specific prompt rules here...
-EOF
-```
-
-#### 3. Via Global Custom File (Machine-Wide)
-Create `~/.gemini/config/agy-auto-approve-prompt.txt` for all projects:
-```bash
-cat << 'EOF' > ~/.gemini/config/agy-auto-approve-prompt.txt
-Your global prompt rules here...
-EOF
-```
-
-#### 4. Direct Source Modification
-Directly edit `DEFAULT_SYSTEM_PROMPT` in [`scripts/eval_guard.py`](scripts/eval_guard.py#L42-L66).
-
----
-
-## How It Works
-
-Whenever `antigravity-cli` prepares to run a tool, the `PreToolUse` lifecycle hook triggers `scripts/eval_guard.py`:
-
-```mermaid
-sequenceDiagram
-    participant MainAgent as Main Agent (agy)
-    participant Hook as PreToolUse (eval_guard.py)
-    participant ReadOnlyAgent as Read-Only Agent (Sandbox)
-    participant User as User
-
-    MainAgent->>Hook: Propose tool call (e.g., run_command)
-    
-    alt Tool is Read-Only (view_file, grep, etc.)
-        Hook-->>MainAgent: allow (Instant pass-through)
-    else Matches Hard Blacklist (rm -rf /, rm -rf .git)
-        Hook-->>MainAgent: deny (Blocked immediately)
-    else Requires Semantic Review
-        Note over Hook: Extract local script content if any
-        Hook->>ReadOnlyAgent: Analyze tool args & script content
-        ReadOnlyAgent-->>Hook: Return verdict (allow / deny / ask)
-        
-        alt Verdict is "allow"
-            Hook-->>MainAgent: allow (Auto-approved)
-        else Verdict is "deny"
-            Hook-->>MainAgent: deny (Blocked)
-        else Verdict is "ask"
-            Hook-->>User: Prompt user for confirmation
-        end
-    end
-```
-
----
-
-## Verification
-
-To verify that the plugin is active:
-
-1. Launch `agy` in any project directory:
+1. **环境变量**（最高优先级）：
    ```bash
-   agy
+   export AGY_AUTO_APPROVE_PROMPT="你的自定义安全审批提示词..."
    ```
-2. Ask the agent to perform safe development actions (e.g., *"Create a hello world python script and run it"*). The actions will be approved automatically without interactive confirmation prompts.
-3. If a dangerous command or out-of-boundary deletion is proposed, the guard will immediately block it.
+2. **项目级文件**（仅当前项目生效）：
+   在项目根目录下创建 `.agents/agy-auto-approve-prompt.txt`
+3. **全局文件**（所有项目生效）：
+   创建 `~/.gemini/config/agy-auto-approve-prompt.txt`
+4. **修改源码**：
+   直接修改 `scripts/eval_guard.py` 中的 `DEFAULT_SYSTEM_PROMPT`。
 
 ---
 
-## Uninstallation / Disabling
+## 配置与 API Key 设置（可选）
 
-To remove the plugin globally:
-
+如需启用 Gemini 云端语义评估，设置 API Key 即可（未配置时自动降级为本地规则评估）：
 ```bash
-rm -rf ~/.gemini/config/plugins/agy-auto-approve
+export GEMINI_API_KEY="your-api-key"
+# 或写入 ~/.gemini/.env
 ```
-
-Alternatively, you can temporarily disable the plugin in `hooks.json` by setting `"enabled": false`.
 
 ---
 
