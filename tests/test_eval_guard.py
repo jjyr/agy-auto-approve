@@ -180,6 +180,42 @@ class TestEvalGuard(unittest.TestCase):
             ]
         )
 
+    def test_long_sed_command(self):
+        cmd = "gh run view 32507479625 --job 96852760226 --log | sed -n '250,450p'"
+        res = self._run_guard("run_command", {"CommandLine": cmd})
+        self.assertEqual(res.get("decision"), "allow")
+        self.assertEqual(
+            res.get("permissionOverrides"),
+            [
+                "command(gh run view)",
+                "command(sed -n '250,450p')"
+            ]
+        )
+
+    def test_curl_piped_to_wc(self):
+        """Test that long curl command with headers piped to wc extracts both sub-commands."""
+        cmd = 'curl -s -H "User-Agent: Whale Moat research ops@whalemoat.com" -H "Accept: application/json" "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json" | wc -c'
+        extracted = eval_guard.extract_shell_commands(cmd)
+        self.assertEqual(
+            extracted,
+            [
+                'curl -s -H "User-Agent: Whale Moat research ops@whalemoat.com" -H "Accept: application/json" "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json"',
+                "wc -c"
+            ]
+        )
+        self.assertTrue(extracted[0].startswith("curl"))
+        self.assertEqual(extracted[1], "wc -c")
+
+        res = self._run_guard("run_command", {"CommandLine": cmd})
+        self.assertEqual(res.get("decision"), "allow")
+        self.assertEqual(
+            res.get("permissionOverrides"),
+            [
+                "command(curl)",
+                "command(wc -c)"
+            ]
+        )
+
     def test_quoted_separators_not_split(self):
         cmd = 'git commit -m "fix: semicolon ; in message && double ampersand"'
         res = self._run_guard("run_command", {"CommandLine": cmd})
@@ -313,13 +349,24 @@ class TestEvalGuard(unittest.TestCase):
     def test_model_and_prompt_customization(self):
         model, effort = eval_guard.get_evaluator_model()
         self.assertEqual(model, "gemini-3.7-flash")
-        self.assertEqual(effort, "low")
+        self.assertEqual(effort, "medium")
 
         os.environ["AGY_AUTO_APPROVE_MODEL"] = "gemini-2.5-pro"
         os.environ["AGY_AUTO_APPROVE_EFFORT"] = "high"
         model, effort = eval_guard.get_evaluator_model()
         self.assertEqual(model, "gemini-2.5-pro")
         self.assertEqual(effort, "high")
+
+        # Test workspace effort config file
+        del os.environ["AGY_AUTO_APPROVE_EFFORT"]
+        os.makedirs(".agents", exist_ok=True)
+        try:
+            with open(".agents/agy-auto-approve-effort.txt", "w", encoding="utf-8") as f:
+                f.write("low")
+            self.assertEqual(eval_guard.get_evaluator_effort(), "low")
+        finally:
+            if os.path.exists(".agents/agy-auto-approve-effort.txt"):
+                os.remove(".agents/agy-auto-approve-effort.txt")
 
         custom_prompt = "Custom strict security evaluator rules."
         os.environ["AGY_AUTO_APPROVE_PROMPT"] = custom_prompt

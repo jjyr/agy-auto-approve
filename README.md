@@ -37,14 +37,30 @@ rm -rf /tmp/agy-auto-approve
 
 ---
 
-## Prompt Location & Customization
+## Configuration & Customization
 
-### Default Evaluator Prompt Location
-The default evaluation prompt is located in:  
-👉 **[`scripts/eval_guard.py`](scripts/eval_guard.py)** (variable: `DEFAULT_SYSTEM_PROMPT`)
+### Defaults
+- **Model**: `gemini-3.7-flash`
+- **Effort**: `medium`
+- **Prompt**: Defined in [`scripts/eval_guard.py`](scripts/eval_guard.py) (`DEFAULT_SYSTEM_PROMPT`)
 
-### How to Customize the Prompt
-You can customize the evaluation prompt without modifying source code. Overrides are resolved in the following priority order:
+### Customizing Model & Effort
+You can customize the model and reasoning effort used by the AI evaluator. Overrides are resolved in the following priority order:
+
+1. **Environment Variables** (Highest Priority):
+   ```bash
+   export AGY_AUTO_APPROVE_MODEL="gemini-3.7-flash"
+   export AGY_AUTO_APPROVE_EFFORT="medium" # low | medium | high
+   ```
+2. **Workspace-Specific Files** (Applies to current project only):
+   - Model: `.agents/agy-auto-approve-model.txt`
+   - Effort: `.agents/agy-auto-approve-effort.txt`
+3. **Global Custom Files** (Applies to all projects):
+   - Model: `~/.gemini/config/agy-auto-approve-model.txt`
+   - Effort: `~/.gemini/config/agy-auto-approve-effort.txt`
+
+### Customizing the Evaluator Prompt
+You can customize the evaluation prompt without modifying source code:
 
 1. **Environment Variable** (Highest Priority):
    ```bash
@@ -54,8 +70,6 @@ You can customize the evaluation prompt without modifying source code. Overrides
    Create `.agents/agy-auto-approve-prompt.txt` at the root of your workspace repository.
 3. **Global Custom File** (Applies to all projects):
    Create `~/.gemini/config/agy-auto-approve-prompt.txt`.
-4. **Direct Source Edit**:
-   Edit `DEFAULT_SYSTEM_PROMPT` in `scripts/eval_guard.py`.
 
 ---
 

@@ -18,7 +18,7 @@ import datetime
 
 # Default Model Configuration for AI Evaluation
 DEFAULT_MODEL = "gemini-3.7-flash"
-DEFAULT_EFFORT = "low"
+DEFAULT_EFFORT = "medium"
 MAX_COMMAND_OVERRIDE_LENGTH = 100
 
 # 1. Read-only tools whitelist (Instant pass-through)
@@ -216,9 +216,15 @@ def format_single_command_override(cmd: str) -> str:
     cmd = cmd.strip()
     if not cmd:
         return ""
+    tokens = cmd.split()
+    if tokens and tokens[0] == "gh":
+        if len(tokens) >= 3 and not tokens[1].startswith("-") and not tokens[2].startswith("-"):
+            return f"command(gh {tokens[1]} {tokens[2]})"
+        elif len(tokens) >= 2 and not tokens[1].startswith("-"):
+            return f"command(gh {tokens[1]})"
+        return "command(gh)"
     if len(cmd) <= MAX_COMMAND_OVERRIDE_LENGTH:
         return f"command({cmd})"
-    tokens = cmd.split()
     if tokens:
         return f"command({tokens[0]})"
     return f"command({cmd[:MAX_COMMAND_OVERRIDE_LENGTH]})"
@@ -310,11 +316,38 @@ def extract_script_content_if_any(cmd: str, workspace_paths: list) -> str:
                     pass
     return ""
 
+def get_evaluator_effort() -> str:
+    """Retrieve effort for agy evaluation with priority overrides."""
+    if os.environ.get("AGY_AUTO_APPROVE_EFFORT"):
+        return os.environ["AGY_AUTO_APPROVE_EFFORT"]
+
+    if os.path.exists(".agents/agy-auto-approve-effort.txt"):
+        try:
+            with open(".agents/agy-auto-approve-effort.txt", "r", encoding="utf-8") as f:
+                effort = f.read().strip()
+                if effort:
+                    return effort
+        except Exception:
+            pass
+
+    global_effort_file = os.path.expanduser("~/.gemini/config/agy-auto-approve-effort.txt")
+    if os.path.exists(global_effort_file):
+        try:
+            with open(global_effort_file, "r", encoding="utf-8") as f:
+                effort = f.read().strip()
+                if effort:
+                    return effort
+        except Exception:
+            pass
+
+    return DEFAULT_EFFORT
+
 def get_evaluator_model() -> tuple[str, str]:
     """Retrieve model and effort for agy evaluation with priority overrides."""
+    effort = get_evaluator_effort()
+
     if os.environ.get("AGY_AUTO_APPROVE_MODEL"):
         model = os.environ["AGY_AUTO_APPROVE_MODEL"]
-        effort = os.environ.get("AGY_AUTO_APPROVE_EFFORT", DEFAULT_EFFORT)
         return model, effort
 
     if os.path.exists(".agents/agy-auto-approve-model.txt"):
@@ -322,7 +355,6 @@ def get_evaluator_model() -> tuple[str, str]:
             with open(".agents/agy-auto-approve-model.txt", "r", encoding="utf-8") as f:
                 model = f.read().strip()
                 if model:
-                    effort = os.environ.get("AGY_AUTO_APPROVE_EFFORT", DEFAULT_EFFORT)
                     return model, effort
         except Exception:
             pass
@@ -333,12 +365,11 @@ def get_evaluator_model() -> tuple[str, str]:
             with open(global_model_file, "r", encoding="utf-8") as f:
                 model = f.read().strip()
                 if model:
-                    effort = os.environ.get("AGY_AUTO_APPROVE_EFFORT", DEFAULT_EFFORT)
                     return model, effort
         except Exception:
             pass
 
-    return DEFAULT_MODEL, DEFAULT_EFFORT
+    return DEFAULT_MODEL, effort
 
 def evaluate_with_agy_cli(system_prompt: str, prompt: str) -> tuple[str, str]:
     """Call agy CLI print mode to evaluate tool call safety with Gemini."""
