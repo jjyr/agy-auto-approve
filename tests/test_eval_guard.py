@@ -167,7 +167,7 @@ class TestEvalGuard(unittest.TestCase):
             ]
         )
 
-    def test_long_command_prefix_truncation(self):
+    def test_long_command_exact_override(self):
         long_unzip = "unzip -q /tmp/run-32438847930/e2e-failure-32438847930/output/cloudflare-local-e2e/test-results/earnings-share-EARNINGS-SH-39124-removes-the-old-image-and-X/trace.zip -d /tmp/trace-010"
         cmd = f"mkdir -p /tmp/trace-010 && {long_unzip}"
         res = self._run_guard("run_command", {"CommandLine": cmd})
@@ -176,7 +176,7 @@ class TestEvalGuard(unittest.TestCase):
             res.get("permissionOverrides"),
             [
                 "command(mkdir -p /tmp/trace-010)",
-                "command(unzip)"
+                f"command({long_unzip})"
             ]
         )
 
@@ -211,7 +211,7 @@ class TestEvalGuard(unittest.TestCase):
         self.assertEqual(
             res.get("permissionOverrides"),
             [
-                "command(curl)",
+                f"command({extracted[0]})",
                 "command(wc -c)"
             ]
         )
@@ -362,7 +362,260 @@ EOF"""
 
         res = self._run_guard("run_command", {"CommandLine": cmd})
         self.assertEqual(res.get("decision"), "allow")
-        self.assertEqual(res.get("permissionOverrides"), ["command(cat)"])
+        self.assertEqual(res.get("permissionOverrides"), [f"command({cmd})"])
+
+    def test_user_example_mkdir_and_echo_command(self):
+        """Test command 1: mkdir chained with echo to agent config script path."""
+        cmd = "mkdir -p /Users/jjy/.gemini/config/plugins/agy-auto-approve/scripts && echo 'import sys;sys.exit(0)' > /Users/jjy/.gemini/config/plugins/agy-auto-approve/scripts/eval_guard.py"
+        extracted = eval_guard.extract_shell_commands(cmd)
+        self.assertEqual(
+            extracted,
+            [
+                "mkdir -p /Users/jjy/.gemini/config/plugins/agy-auto-approve/scripts",
+                "echo 'import sys;sys.exit(0)' > /Users/jjy/.gemini/config/plugins/agy-auto-approve/scripts/eval_guard.py"
+            ]
+        )
+
+        res = self._run_guard("run_command", {"CommandLine": cmd})
+        self.assertEqual(res.get("decision"), "allow")
+        self.assertEqual(
+            res.get("permissionOverrides"),
+            [
+                "command(mkdir -p /Users/jjy/.gemini/config/plugins/agy-auto-approve/scripts)",
+                "command(echo 'import sys;sys.exit(0)' > /Users/jjy/.gemini/config/plugins/agy-auto-approve/scripts/eval_guard.py)"
+            ]
+        )
+
+    def test_user_example_cat_heredoc_css_command(self):
+        """Test command 2: cat heredoc appending multi-line CSS to workspace stylesheet."""
+        cmd = """cat << 'EOF' >> apps/public-web/src/styles/public-home.css
+
+/* ==========================================================================
+   Whale Moat Focus Stock & Whale Teasers, Starter Packs & Pro Badge
+   ========================================================================== */
+
+.stock-teaser-canvas,
+.whale-teaser-canvas {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+  background: var(--radar-surface, var(--terminal-bg, #0b0f14));
+  color: var(--radar-text, #c9d1d9);
+  border-radius: 0 !important;
+}
+
+.stock-teaser-header,
+.whale-teaser-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  border-bottom: 1px solid var(--radar-border, #21262d);
+  padding-bottom: 12px;
+}
+
+.stock-teaser-symbol,
+.whale-teaser-manager {
+  font-family: var(--font-mono, monospace);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--radar-text-bright, #f0f6fc);
+}
+
+.stock-teaser-name,
+.whale-teaser-display {
+  font-size: 14px;
+  color: var(--radar-text-muted, #8b949e);
+  margin-left: 6px;
+}
+
+.stock-teaser-badge {
+  display: inline-block;
+  margin-left: 8px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  padding: 1px 6px;
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  border-radius: 0 !important;
+}
+
+.stock-teaser-metrics,
+.whale-teaser-metrics {
+  display: flex;
+  gap: 12px;
+  margin-top: 6px;
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+}
+
+.stock-teaser-price {
+  font-weight: 700;
+  color: var(--radar-text-bright, #f0f6fc);
+}
+
+.stock-teaser-qualifier,
+.whale-teaser-value {
+  color: var(--radar-text-muted, #8b949e);
+}
+
+.stock-teaser-section,
+.whale-teaser-section {
+  border: 1px solid var(--radar-border, #21262d);
+  padding: 12px;
+  background: var(--radar-surface-subtle, rgba(255, 255, 255, 0.02));
+  border-radius: 0 !important;
+}
+
+.stock-teaser-section-title,
+.whale-teaser-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--radar-text-muted, #8b949e);
+  margin-bottom: 8px;
+}
+
+.stock-teaser-highlights,
+.whale-teaser-holdings-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stock-teaser-highlight-item,
+.whale-teaser-holding-item {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--radar-text, #c9d1d9);
+  display: flex;
+  gap: 6px;
+}
+
+.stock-teaser-bullet {
+  color: #38bdf8;
+  font-weight: bold;
+}
+
+.whale-holding-symbol {
+  font-family: var(--font-mono, monospace);
+  font-weight: 700;
+  color: var(--radar-text-bright, #f0f6fc);
+  min-width: 60px;
+}
+
+.whale-holding-weight {
+  font-family: var(--font-mono, monospace);
+  color: var(--radar-text-muted, #8b949e);
+  min-width: 60px;
+}
+
+.whale-holding-action.is-increased {
+  color: #3fb950;
+}
+.whale-holding-action.is-decreased {
+  color: #f85149;
+}
+.whale-holding-action.is-new {
+  color: #38bdf8;
+}
+.whale-holding-action.is-unchanged {
+  color: #8b949e;
+}
+
+.stock-teaser-footer,
+.whale-teaser-footer {
+  margin-top: 8px;
+}
+
+.stock-teaser-cta-button,
+.whale-teaser-cta-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 16px;
+  background: #238636;
+  color: #ffffff;
+  font-weight: 600;
+  font-size: 13px;
+  text-decoration: none;
+  border-radius: 0 !important;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: background 0.15s ease;
+}
+
+.stock-teaser-cta-button:hover,
+.whale-teaser-cta-button:hover {
+  background: #2ea043;
+}
+
+.market-starter-packs {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--radar-border, #21262d);
+}
+
+.market-starter-pack-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--radar-text-muted, #8b949e);
+}
+
+.market-starter-pack-btn {
+  background: transparent;
+  border: 1px dashed var(--radar-border, #30363d);
+  padding: 6px 10px;
+  color: var(--radar-text, #c9d1d9);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 0 !important;
+}
+
+.market-starter-pack-btn:hover {
+  border-color: #38bdf8;
+  color: #38bdf8;
+}
+
+.radar-user-pro-badge {
+  display: inline-block;
+  margin-left: 6px;
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 0 4px;
+  background: #d29922;
+  color: #0b0f14;
+  border-radius: 0 !important;
+}
+
+.market-tape-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-family: var(--font-mono, monospace);
+  padding: 1px 4px;
+  margin-left: 4px;
+  background: rgba(56, 189, 248, 0.1);
+  color: #38bdf8;
+  border-radius: 0 !important;
+}
+EOF"""
+        extracted = eval_guard.extract_shell_commands(cmd)
+        self.assertEqual(len(extracted), 1)
+        self.assertEqual(extracted[0], cmd)
+
+        res = self._run_guard("run_command", {"CommandLine": cmd})
+        self.assertEqual(res.get("decision"), "allow")
+        self.assertEqual(res.get("permissionOverrides"), [f"command({cmd})"])
 
     def test_heredoc_cat_chained_with_subsequent_command(self):
         """Test multiline heredoc followed by another command."""
