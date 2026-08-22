@@ -176,7 +176,7 @@ class TestEvalGuard(unittest.TestCase):
             res.get("permissionOverrides"),
             [
                 "command(mkdir -p /tmp/trace-010)",
-                f"command({long_unzip})"
+                f"command({long_unzip[:80]})"
             ]
         )
 
@@ -211,7 +211,7 @@ class TestEvalGuard(unittest.TestCase):
         self.assertEqual(
             res.get("permissionOverrides"),
             [
-                f"command({extracted[0]})",
+                f"command({extracted[0][:80]})",
                 "command(wc -c)"
             ]
         )
@@ -362,7 +362,8 @@ EOF"""
 
         res = self._run_guard("run_command", {"CommandLine": cmd})
         self.assertEqual(res.get("decision"), "allow")
-        self.assertEqual(res.get("permissionOverrides"), [f"command({cmd})"])
+        # Long heredoc command is truncated to an exact 80-char prefix.
+        self.assertEqual(res.get("permissionOverrides"), [f"command({cmd[:80]})"])
 
     def test_user_example_mkdir_and_echo_command(self):
         """Test command 1: mkdir chained with echo to agent config script path."""
@@ -382,7 +383,7 @@ EOF"""
             res.get("permissionOverrides"),
             [
                 "command(mkdir -p /Users/jjy/.gemini/config/plugins/agy-auto-approve/scripts)",
-                "command(echo 'import sys;sys.exit(0)' > /Users/jjy/.gemini/config/plugins/agy-auto-approve/scripts/eval_guard.py)"
+                f"command({extracted[1][:80]})"
             ]
         )
 
@@ -615,7 +616,40 @@ EOF"""
 
         res = self._run_guard("run_command", {"CommandLine": cmd})
         self.assertEqual(res.get("decision"), "allow")
-        self.assertEqual(res.get("permissionOverrides"), [f"command({cmd})"])
+        # Long heredoc command is truncated to an exact 80-char prefix.
+        self.assertEqual(res.get("permissionOverrides"), [f"command({cmd[:80]})"])
+
+    def test_user_example_cat_heredoc_conversion_spec_command(self):
+        """Test command: cat heredoc writing e2e conversion spec file."""
+        cmd = """cat << 'EOF' > e2e/cloudflare-local/radar-home-conversion.spec.ts
+import { expect, test } from "../support/test.js";
+import { waitForAppReady } from "../support/terminal.js";
+
+test.describe("Calendar & Web Push Conversion Hooks", () => {
+  test("CONVERSION-001: Calendar sync popover button is accessible in Right Pane", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/");
+    await waitForAppReady(page);
+
+    const rightPane = page.locator(".radar-agenda");
+    await expect(rightPane).toBeVisible();
+
+    const calendarBtn = rightPane.locator(".calendar-subscription-trigger, button[aria-
+label*='calendar' i]");
+    await expect(calendarBtn).toBeVisible();
+  });
+});
+EOF"""
+        extracted = eval_guard.extract_shell_commands(cmd)
+        self.assertEqual(len(extracted), 1)
+        self.assertEqual(extracted[0], cmd)
+
+        res = self._run_guard("run_command", {"CommandLine": cmd})
+        self.assertEqual(res.get("decision"), "allow")
+        # Long heredoc command is truncated to an exact 80-char prefix.
+        self.assertEqual(res.get("permissionOverrides"), [f"command({cmd[:80]})"])
 
     def test_heredoc_cat_chained_with_subsequent_command(self):
         """Test multiline heredoc followed by another command."""
@@ -633,7 +667,7 @@ npm run build"""
         self.assertEqual(
             res.get("permissionOverrides"),
             [
-                "command(cat << 'EOF' > workers/api/src/home-catalog.ts\nexport const version = \"1.0.0\";\nEOF)",
+                f"command({extracted[0][:80]})",
                 "command(npm run build)"
             ]
         )

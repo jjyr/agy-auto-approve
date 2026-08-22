@@ -19,6 +19,7 @@ import datetime
 # Default Model Configuration for AI Evaluation
 DEFAULT_MODEL = "gemini-3.7-flash"
 DEFAULT_EFFORT = "medium"
+MAX_COMMAND_OVERRIDE_LENGTH = 80
 
 # 1. Read-only tools whitelist (Instant pass-through)
 READ_ONLY_TOOLS = {
@@ -253,7 +254,11 @@ def extract_shell_commands(cmd_str: str) -> list[str]:
     return commands or [cmd_str.strip()]
 
 def format_single_command_override(cmd: str) -> str:
-    """Format a sub-command into a permission override."""
+    """Format an individual parsed sub-command into a permission override.
+    
+    If length <= 80, emit exact command override.
+    If length > 80, directly return the first 80 characters prefix.
+    """
     cmd = cmd.strip()
     if not cmd:
         return ""
@@ -264,7 +269,9 @@ def format_single_command_override(cmd: str) -> str:
         elif len(tokens) >= 2 and not tokens[1].startswith("-"):
             return f"command(gh {tokens[1]})"
         return "command(gh)"
-    return f"command({cmd})"
+    if len(cmd) <= MAX_COMMAND_OVERRIDE_LENGTH:
+        return f"command({cmd})"
+    return f"command({cmd[:MAX_COMMAND_OVERRIDE_LENGTH]})"
 
 def get_permission_overrides(tool_name: str, tool_args: dict) -> list[str]:
     """Generate dynamic permission grants to bypass interactive confirmation prompts."""
