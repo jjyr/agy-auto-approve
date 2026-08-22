@@ -346,6 +346,76 @@ class TestEvalGuard(unittest.TestCase):
         cmd_single = 'PATH="/Users/jjy/.cargo/bin:$PATH" ./tests/nodes/wait.sh'
         self.assertEqual(eval_guard.extract_shell_commands(cmd_single), ["./tests/nodes/wait.sh"])
 
+    def test_heredoc_cat_multiline_command(self):
+        """Test multiline heredoc with cat writes to file without splitting lines into bogus sub-commands."""
+        cmd = """cat << 'EOF' > workers/api/src/home-catalog.ts
+import {
+  HomeCatalogResponseSchema,
+  type HomeCatalogResponse,
+  type HomeFocusStockSummary,
+}
+EOF"""
+        extracted = eval_guard.extract_shell_commands(cmd)
+        self.assertEqual(len(extracted), 1)
+        self.assertTrue(extracted[0].startswith("cat"))
+        self.assertIn("HomeCatalogResponseSchema", extracted[0])
+
+        res = self._run_guard("run_command", {"CommandLine": cmd})
+        self.assertEqual(res.get("decision"), "allow")
+        self.assertEqual(res.get("permissionOverrides"), ["command(cat)"])
+
+    def test_heredoc_cat_chained_with_subsequent_command(self):
+        """Test multiline heredoc followed by another command."""
+        cmd = """cat << 'EOF' > workers/api/src/home-catalog.ts
+export const version = "1.0.0";
+EOF
+npm run build"""
+        extracted = eval_guard.extract_shell_commands(cmd)
+        self.assertEqual(len(extracted), 2)
+        self.assertTrue(extracted[0].startswith("cat"))
+        self.assertEqual(extracted[1], "npm run build")
+
+        res = self._run_guard("run_command", {"CommandLine": cmd})
+        self.assertEqual(res.get("decision"), "allow")
+        self.assertEqual(
+            res.get("permissionOverrides"),
+            [
+                "command(cat << 'EOF' > workers/api/src/home-catalog.ts\nexport const version = \"1.0.0\";\nEOF)",
+                "command(npm run build)"
+            ]
+        )
+
+    def test_heredoc_syntax_variations(self):
+        """Test different heredoc delimiter styles: unquoted, double-quoted, tab-stripped (<<-)."""
+        # Unquoted delimiter
+        cmd_unquoted = "cat << EOF > file1.txt\nline 1\nEOF"
+        ext1 = eval_guard.extract_shell_commands(cmd_unquoted)
+        self.assertEqual(len(ext1), 1)
+        self.assertTrue(ext1[0].startswith("cat"))
+
+        # Double quoted delimiter
+        cmd_double = 'cat << "MY_DELIM" > file2.txt\nline 2\nMY_DELIM'
+        ext2 = eval_guard.extract_shell_commands(cmd_double)
+        self.assertEqual(len(ext2), 1)
+        self.assertTrue(ext2[0].startswith("cat"))
+
+        # Tab-stripped <<- delimiter
+        cmd_tab = "cat <<- 'EOF' > file3.txt\n\tline 3\n\tEOF"
+        ext3 = eval_guard.extract_shell_commands(cmd_tab)
+        self.assertEqual(len(ext3), 1)
+        self.assertTrue(ext3[0].startswith("cat"))
+
+    def test_heredoc_chained_with_subsequent_commands(self):
+        """Test multiline heredoc followed by subsequent commands on next lines."""
+        cmd = """cat << 'EOF' > config.json
+{"key": "value"}
+EOF
+echo "saved" """
+        extracted = eval_guard.extract_shell_commands(cmd)
+        self.assertEqual(len(extracted), 2)
+        self.assertTrue(extracted[0].startswith("cat"))
+        self.assertEqual(extracted[1], 'echo "saved"')
+
     def test_model_and_prompt_customization(self):
         model, effort = eval_guard.get_evaluator_model()
         self.assertEqual(model, "gemini-3.7-flash")

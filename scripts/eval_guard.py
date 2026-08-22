@@ -112,7 +112,9 @@ def format_reason(decision: str, reason: str) -> str:
         return clean_reason
     return f"{tag} {clean_reason}"
 
-ENV_VAR_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*")
+HEREDOC_START_PATTERN = re.compile(
+    r"(?<!<)<<(-?)\s*(?:'([^']*)'|\"([^\"]*)\"|\\?([^\s;&|<>()]+))"
+)
 
 def clean_subcommand(cmd: str) -> str:
     """Strip grouping parentheses/braces and leading environment variables from subcommand."""
@@ -121,15 +123,12 @@ def clean_subcommand(cmd: str) -> str:
         cmd = cmd[1:-1].strip()
     cmd = cmd.lstrip("(").rstrip(")")
     
-    tokens = cmd.split()
-    first_cmd_idx = 0
-    while first_cmd_idx < len(tokens) and ENV_VAR_PATTERN.match(tokens[first_cmd_idx]):
-        first_cmd_idx += 1
-        
-    if first_cmd_idx > 0 and first_cmd_idx < len(tokens):
-        cmd = " ".join(tokens[first_cmd_idx:])
-    elif first_cmd_idx >= len(tokens) and tokens:
-        return ""
+    while True:
+        m = re.match(r"^[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S+)\s*", cmd)
+        if m:
+            cmd = cmd[m.end():].lstrip()
+        else:
+            break
         
     return cmd.strip()
 
@@ -141,6 +140,7 @@ def extract_shell_commands(cmd_str: str) -> list[str]:
     current = []
     in_single = False
     in_double = False
+    pending_heredocs = []
     i = 0
     n = len(cmd_str)
 
@@ -173,6 +173,48 @@ def extract_shell_commands(cmd_str: str) -> list[str]:
             continue
 
         if not in_single and not in_double:
+            # Detect heredoc operator << or <<-
+            if char == "<" and i + 1 < n and cmd_str[i+1] == "<":
+                prev_char = cmd_str[i-1] if i > 0 else ""
+                next_char = cmd_str[i+2] if i + 2 < n else ""
+                if prev_char != "<" and next_char != "<":
+                    m = HEREDOC_START_PATTERN.match(cmd_str, i)
+                    if m:
+                        strip_tab = bool(m.group(1))
+                        delim = m.group(2) or m.group(3) or m.group(4)
+                        pending_heredocs.append((delim, strip_tab))
+
+            # Consume heredoc body when reaching newline after heredoc declaration
+            if char == "\n" and pending_heredocs:
+                current.append(char)
+                i += 1
+                while pending_heredocs and i < n:
+                    delim, strip_tab = pending_heredocs[0]
+                    line_end = cmd_str.find("\n", i)
+                    if line_end == -1:
+                        line_content = cmd_str[i:]
+                        next_i = n
+                    else:
+                        line_content = cmd_str[i:line_end]
+                        next_i = line_end + 1
+
+                    check_line = line_content.rstrip("\r")
+                    if strip_tab:
+                        check_line = check_line.lstrip("\t")
+
+                    if check_line == delim:
+                        pending_heredocs.pop(0)
+                        current.append(line_content)
+                        if line_end != -1:
+                            i = line_end
+                        else:
+                            i = n
+                        break
+
+                    current.append(cmd_str[i:next_i])
+                    i = next_i
+                continue
+
             if i + 1 < n and cmd_str[i:i+2] in ("&&", "||", "|&"):
                 cmd_part = clean_subcommand("".join(current))
                 if cmd_part:
