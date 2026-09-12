@@ -1,77 +1,39 @@
 # agy-auto-approve
 
-Adds intelligent **auto-approve** capabilities to [Antigravity CLI](https://antigravity.google) (`agy`).
+Automatic approval hooks and a persistent approval daemon for Antigravity CLI and Desktop, built as a single Rust executable. AI reviews use the host's `agentapi` command and require an active login.
 
----
+## Install
 
-## Features
+Install the latest release on macOS or Linux (ARM64 and x86_64):
 
-Evaluates tool calls before execution via the `PreToolUse` lifecycle hook:
-
-1. **Instant Pass-Through for Read-Only Tools**: `view_file`, `grep_search`, `find_by_name`, `list_dir`, etc. are approved immediately without confirmation.
-2. **Hard Blacklist Defense**: Instantly denies catastrophic commands (e.g., `rm -rf /`, deleting `.git`, disk partition/format commands) with zero latency.
-3. **Smart Dynamic Permission Overrides**: For safe commands and in-workspace edits, automatically evaluates safety and injects matching `permissionOverrides` (including full multi-command resolution for chained shell operators like `;`, `&&`, `||`, `|`), bypassing interactive confirmation prompts.
-4. **Real-Time Audit Logging**: Emits live status indicators to the terminal and maintains a persistent audit log at `~/.gemini/antigravity-cli/auto-approve.log`.
-
----
-
-## Installation & Usage
-
-### Installation
 ```bash
-# Local installation
-agy plugin install /path/to/agy-auto-approve && \
-python3 /path/to/agy-auto-approve/scripts/register_hook.py
-
-# Or install from GitHub
-git clone git@github.com:jjyr/agy-auto-approve.git /tmp/agy-auto-approve && \
-agy plugin install /tmp/agy-auto-approve && \
-python3 /tmp/agy-auto-approve/scripts/register_hook.py && \
-rm -rf /tmp/agy-auto-approve
+curl -fsSL https://raw.githubusercontent.com/jjyr/agy-auto-approve/main/scripts/install.sh | sh
 ```
 
-### Management
-- **List installed plugins**: `agy plugin list`
-- **Tail live approval audit logs**: `tail -f ~/.gemini/antigravity-cli/auto-approve.log`
-- **Uninstall plugin**: `agy plugin uninstall agy-auto-approve`
+The installer verifies the download, installs to `~/.local/bin`, and registers the CLI hook and Desktop sidecar. No Rust or Python is required. Make sure `~/.local/bin` is on your `PATH`.
 
----
+## Development install
 
-## Configuration & Customization
+Requires Git, Rust/Cargo, and a C compiler.
 
-### Defaults
-- **Model**: `gemini-3.7-flash`
-- **Effort**: `medium`
-- **Prompt**: Defined in [`scripts/eval_guard.py`](scripts/eval_guard.py) (`DEFAULT_SYSTEM_PROMPT`)
+```bash
+git clone https://github.com/jjyr/agy-auto-approve.git
+cd agy-auto-approve
+sh scripts/install.sh --source .
+```
 
-### Customizing Model & Effort
-You can customize the model and reasoning effort used by the AI evaluator. Overrides are resolved in the following priority order:
+## Logs
 
-1. **Environment Variables** (Highest Priority):
-   ```bash
-   export AGY_AUTO_APPROVE_MODEL="gemini-3.7-flash"
-   export AGY_AUTO_APPROVE_EFFORT="medium" # low | medium | high
-   ```
-2. **Workspace-Specific Files** (Applies to current project only):
-   - Model: `.agents/agy-auto-approve-model.txt`
-   - Effort: `.agents/agy-auto-approve-effort.txt`
-3. **Global Custom Files** (Applies to all projects):
-   - Model: `~/.gemini/config/agy-auto-approve-model.txt`
-   - Effort: `~/.gemini/config/agy-auto-approve-effort.txt`
+```bash
+agy-auto-approve logs                     # Show recent approvals
+agy-auto-approve logs -f                  # Follow new approvals
+agy-auto-approve logs --decision deny     # Show denied approvals
+agy-auto-approve logs show APPROVAL_ID    # Show the full approval record
+```
 
-### Customizing the Evaluator Prompt
-You can customize the evaluation prompt without modifying source code:
+Logs are stored in `~/.gemini/agy-auto-approve` and can be read without a running daemon.
 
-1. **Environment Variable** (Highest Priority):
-   ```bash
-   export AGY_AUTO_APPROVE_PROMPT="Your custom evaluator prompt here..."
-   ```
-2. **Workspace-Specific File** (Applies to current project only):
-   Create `.agents/agy-auto-approve-prompt.txt` at the root of your workspace repository.
-3. **Global Custom File** (Applies to all projects):
-   Create `~/.gemini/config/agy-auto-approve-prompt.txt`.
-
----
+For all commands and options, see the [command reference](docs/commands.md). For more details, see the [approval architecture](docs/auto_approver_architecture.md) and [sidecar documentation](docs/sidecars.md).
 
 ## License
 
