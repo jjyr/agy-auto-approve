@@ -5,6 +5,18 @@ pub fn home() -> PathBuf {
         .map(PathBuf::from)
         .expect("HOME must be set")
 }
+/// Preserve the host-injected PATH and append the CLI shim directory as a fallback.
+/// Only applied to reviewer child processes, never to the daemon's global environment.
+pub fn agentapi_path() -> anyhow::Result<std::ffi::OsString> {
+    let mut paths: Vec<PathBuf> = env::var_os("PATH")
+        .map(|path| env::split_paths(&path).collect())
+        .unwrap_or_default();
+    let fallback = home().join(".gemini/antigravity-cli/bin");
+    if !paths.contains(&fallback) {
+        paths.push(fallback);
+    }
+    Ok(env::join_paths(paths)?)
+}
 pub fn log_dir() -> PathBuf {
     env::var_os("AGY_AUTO_APPROVE_LOG_DIR")
         .map(PathBuf::from)

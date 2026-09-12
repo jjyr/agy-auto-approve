@@ -2,7 +2,7 @@ use crate::{audit, config, parser};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, process::Stdio, time::Duration};
 use tokio::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,6 +11,8 @@ pub struct Assessment {
     pub risk_level: String,
     pub user_authorization: String,
     pub rationale: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_stage: Option<String>,
 }
 impl Assessment {
     pub fn deny(reason: impl std::fmt::Display) -> Self {
@@ -19,6 +21,7 @@ impl Assessment {
             risk_level: "high".into(),
             user_authorization: "unknown".into(),
             rationale: format!("Fail-closed: {reason}"),
+            error_stage: Some("reviewer".into()),
         }
     }
 }
@@ -66,6 +69,7 @@ pub fn parse(raw: &str) -> Assessment {
     };
     let allow = outcome == "allow";
     Assessment {
+        error_stage: None,
         outcome,
         risk_level: v["risk_level"]
             .as_str()
@@ -144,31 +148,46 @@ impl Default for Bridge {
 impl Bridge {
     async fn call(args: &[&str], id: &str) -> Result<String> {
         let started = std::time::Instant::now();
+        let path = config::agentapi_path().context("Cannot construct agentapi search PATH")?;
+        let operation = args.first().copied().unwrap_or("unknown");
         audit::record(
             id,
             "agentapi_request",
-            json!({"command":"agentapi", "args":args}),
+            json!({"command":"agentapi", "args":args, "operation":operation,
+                "daemon_pid":std::process::id(),
+                "search_path":std::env::split_paths(&path).collect::<Vec<_>>(),
+                "fallback_directory":config::home().join(".gemini/antigravity-cli/bin")}),
         );
-        let result = tokio::time::timeout(
-            Duration::from_secs(20),
-            Command::new("agentapi")
+        let result = tokio::time::timeout(Duration::from_secs(20), async {
+            let child = Command::new("agentapi")
+                .env("PATH", &path)
                 .args(args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
                 .kill_on_drop(true)
-                .output(),
-        )
+                .spawn()
+                .map_err(|e| ("spawn", e))?;
+            child.wait_with_output().await.map_err(|e| ("output", e))
+        })
         .await;
         let output = match result {
             Ok(Ok(output)) => output,
             error => {
-                let message = match error {
-                    Ok(Err(e)) => e.to_string(),
-                    Err(_) => "agentapi timed out".into(),
+                let (stage, message) = match error {
+                    Ok(Err((stage, e))) => (
+                        stage,
+                        format!(
+                            "agentapi {operation} failed during {stage} (inherited PATH plus CLI fallback): {e}"
+                        ),
+                    ),
+                    Err(_) => ("timeout", format!("agentapi {operation} timed out")),
                     _ => unreachable!(),
                 };
                 audit::record(
                     id,
                     "agentapi_error",
-                    json!({"error":message,"duration_ms":started.elapsed().as_millis()}),
+                    json!({"error":message,"stage":stage,"operation":operation,"duration_ms":started.elapsed().as_millis()}),
                 );
                 bail!("{message}");
             }
@@ -182,7 +201,8 @@ impl Bridge {
         );
         if !output.status.success() {
             bail!(
-                "agentapi failed: {}",
+                "agentapi {operation} exited with {}: {}",
+                output.status,
                 String::from_utf8_lossy(&output.stderr)
             );
         }
@@ -219,11 +239,17 @@ impl Bridge {
             "reviewer_session",
             json!({"conversation_id":cid,"reused":false}),
         );
-        std::fs::create_dir_all(self.path.parent().unwrap())?;
+        std::fs::create_dir_all(self.path.parent().unwrap()).with_context(|| {
+            format!(
+                "Cannot create reviewer state directory for {}",
+                self.path.display()
+            )
+        })?;
         std::fs::write(
             &self.path,
             serde_json::to_vec(&json!({"conversationId": cid}))?,
-        )?;
+        )
+        .with_context(|| format!("Cannot save reviewer session to {}", self.path.display()))?;
         Ok(cid)
     }
     async fn send(&mut self, payload: &str, id: &str) -> Result<String> {
@@ -278,7 +304,7 @@ impl Bridge {
         }
         let assessment = match result {
             Ok(raw) => parse(&raw),
-            Err(err) => Assessment::deny(format!("Approver review failed: {err}")),
+            Err(err) => Assessment::deny(format!("Approver review failed: {err:#}")),
         };
         audit::record(id, "reviewer_result", json!({"assessment":assessment}));
         assessment

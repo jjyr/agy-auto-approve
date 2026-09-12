@@ -1,18 +1,27 @@
-# Sidecar 与 daemon
+# Sidecars and the daemon
 
-CLI 和 Antigravity Desktop 使用相同的 Rust 可执行文件、hook 协议和审批管线，区别在于 daemon 的启动方式。运行环境需要宿主提供的 `agentapi` 命令及其登录状态。
+CLI and Antigravity Desktop use the same Rust executable, hook protocol, and approval pipeline. They differ in how the daemon starts. The runtime requires the host's `agentapi` command and an active login.
 
-## 启动与安装
+When invoking `agentapi`, the reviewer preserves the daemon's inherited PATH and appends
+`$HOME/.gemini/antigravity-cli/bin` unless it is already present. Commands injected by
+the sidecar host take priority, while launches outside a sidecar can also find the CLI
+shim. Paths are constructed using Rust's `split_paths` / `join_paths` and the user's
+HOME, supporting Linux and macOS without relying on Homebrew or a login shell. Only
+the reviewer subprocess's PATH is changed. A failure after the program starts does
+not switch execution to another copy of `agentapi`. The daemon retains its startup
+environment.
+
+## Startup and installation
 
 ```bash
-./scripts/install.sh                  # 下载最新 Release、安装并注册两种模式
-./scripts/install.sh --cli-only       # 仅注册 CLI
-./scripts/install.sh --desktop-only   # 仅注册 Desktop
+./scripts/install.sh                  # Download the latest release, install, and register both modes
+./scripts/install.sh --cli-only       # Register CLI only
+./scripts/install.sh --desktop-only   # Register Desktop only
 ```
 
-CLI 的 `agy-auto-approve hook` 在需要 AI 审批时探测 Unix socket；如果不可用，启动同一可执行文件的 `daemon run` 子进程，并在 3 秒启动期限内探测就绪状态。只读白名单、黑名单和已触发的熔断器无需启动 daemon。
+In CLI mode, `agy-auto-approve hook` probes the Unix socket when AI review is needed. If the daemon is unavailable, the hook starts the same executable with `daemon run` and probes for readiness within a three-second startup deadline. Read-only allowlist decisions, blocklist decisions, and an already-tripped circuit breaker do not require starting the daemon.
 
-Desktop 通过注册器部署的 sidecar manifest 启动 `agy-auto-approve daemon run`。manifest 的 `command` 是安装后二进制文件的绝对路径，参数为 `["daemon", "run"]`；启用项写入 `~/.gemini/config/config.json` 的 `sidecars.agy-auto-approve/approver`。
+Desktop starts `agy-auto-approve daemon run` through the sidecar manifest deployed by the registration command. The manifest's `command` is the absolute path to the installed binary, with arguments `["daemon", "run"]`. The enabled entry is written to `sidecars.agy-auto-approve/approver` in `~/.gemini/config/config.json`.
 
 ```bash
 agy-auto-approve daemon start
@@ -21,54 +30,54 @@ agy-auto-approve daemon stop
 agy-auto-approve daemon run --idle-timeout 0
 ```
 
-默认空闲 1800 秒退出，`--idle-timeout 0` 禁用空闲退出。审批进行中不会因空闲退出；状态和停止请求可在模型调用期间处理。升级后 CLI 用户重启 daemon，Desktop 用户重新注册并重启宿主。已运行进程不会因为磁盘上的二进制替换而自动升级。
+The daemon exits after 1,800 idle seconds by default; `--idle-timeout 0` disables idle shutdown. Active reviews prevent idle shutdown, and status and stop requests can be handled during model calls. After an upgrade, CLI users should restart the daemon; Desktop users should register again and restart the host. Replacing the binary on disk does not update an already-running process.
 
-## 请求流程
+## Request flow
 
 ```mermaid
 flowchart TD
-    Hook[agy-auto-approve hook] --> Policy[白名单 / 黑名单 / 熔断检查]
-    Policy -->|需要模型| Probe[探测并按需启动 daemon]
+    Hook[agy-auto-approve hook] --> Policy[Allowlist / blocklist / circuit breaker checks]
+    Policy -->|Model needed| Probe[Probe and start daemon on demand]
     Probe --> Socket[Unix socket]
-    Socket --> Lock[串行化 reviewer 会话访问]
-    Lock --> Session{已有会话?}
-    Session -->|否| New[agentapi new-conversation]
-    Session -->|是| Send[agentapi send-message]
+    Socket --> Lock[Serialize reviewer session access]
+    Lock --> Session{Existing session?}
+    Session -->|No| New[agentapi new-conversation]
+    Session -->|Yes| Send[agentapi send-message]
     New --> Send
-    Send --> Parse[解析 assessment]
-    Parse --> Result[更新熔断状态并生成 hook 输出]
-    Probe -->|失败| Deny[deny]
-    Send -->|失败 / 超时| Deny
+    Send --> Parse[Parse assessment]
+    Parse --> Result[Update circuit breaker and produce hook output]
+    Probe -->|Failure| Deny[deny]
+    Send -->|Failure / timeout| Deny
 ```
 
-## Socket 与状态
+## Socket and state
 
-默认 socket 为 `~/.gemini/antigravity-cli/approver.sock`，可用 `AGY_APPROVER_SOCKET` 覆盖。该历史路径仍由两种模式共用，不要求安装 CLI。协议是换行分隔的 JSON 对象，不是标准 JSON-RPC 2.0。
+The default socket is `~/.gemini/antigravity-cli/approver.sock`, overridden by `AGY_APPROVER_SOCKET`. Both modes share this legacy path; using it does not require a CLI installation. The protocol uses newline-delimited JSON objects, not standard JSON-RPC 2.0.
 
-| action | 响应 |
+| Action | Response |
 | --- | --- |
-| `ping` | `status: pong`，附进程状态 |
-| `status` | `status: running`，附 PID、版本、运行时长、审批计数 |
-| `stop` | `status: stopping`，随后关闭并清理 socket |
-| `evaluate` | `status: ok` 和 `assessment` |
+| `ping` | `status: pong`, with process status |
+| `status` | `status: running`, with PID, version, uptime, and review counts |
+| `stop` | `status: stopping`, followed by shutdown and socket cleanup |
+| `evaluate` | `status: ok` and an `assessment` |
 
-审批请求包含 `toolCall`、`workspacePaths` 和日志关联用的 `request_id`。客户端总请求超时为 25 秒；daemon 的审批期限为 24 秒，包含等待会话锁及失效会话重试的时间；单个 agentapi 子进程超时为 20 秒。
+Review requests contain `toolCall`, `workspacePaths`, and a `request_id` for log correlation. The client request timeout is 25 seconds. The daemon's review deadline is 24 seconds, including time waiting for the session lock and retrying a failed cached session. Each `agentapi` subprocess has a 20-second timeout.
 
-socket 权限为 `0600`。daemon 在存活期间持有独占锁，防止多个并发启动者覆盖同一 socket。无监听者的旧 socket 可以清理，普通文件和符号链接不会作为旧 socket 删除。
+Socket permissions are `0600`. The daemon holds an exclusive lock for its lifetime to prevent concurrent starters from replacing the same socket. A stale socket without a listener can be removed; regular files and symbolic links are not deleted as stale sockets.
 
-默认状态目录为 `~/.gemini/antigravity-cli/state`，其中 `reviewer_session.json` 保存会话 ID，`cb_<conversation>.json` 保存各调用方对话的熔断状态。`AGY_APPROVER_STATE_DIR` 可覆盖；只设置 `AGY_AUTO_APPROVE_LOG_DIR` 时，状态目录改为该日志目录的 `state/`。
+The default state directory is `~/.gemini/antigravity-cli/state`. It contains `reviewer_session.json` for the session ID and `cb_<conversation>.json` for each caller conversation's circuit breaker state. `AGY_APPROVER_STATE_DIR` overrides this directory. If only `AGY_AUTO_APPROVE_LOG_DIR` is set, state is stored in the log directory's `state/` subdirectory.
 
-## 会话复用与故障处理
+## Session reuse and failure handling
 
-新建 reviewer 会话时注入提示词并持久化会话 ID，后续只通过 `send-message` 提交待审操作。daemon 重启可以加载已有会话。缓存会话调用失败时清除缓存、重新创建并重试一次；没有缓存的首次失败直接拒绝。
+A new reviewer session receives the prompt, and its session ID is persisted. Subsequent reviews submit only the proposed action through `send-message`. The daemon can load an existing session after a restart. If a cached session call fails, the cache is cleared, a new conversation is created, and the request is retried once. An initial failure without a cached session is denied immediately.
 
-复用会话可减少重复上下文建立，但实际缓存命中率和响应时间取决于宿主与模型服务。配置文件相对 daemon 启动目录解析，修改提示词不会改变已经创建的 reviewer 会话。
+Session reuse reduces repeated context setup, but actual cache hit rates and response times depend on the host and model service. Configuration files are resolved relative to the daemon's startup directory. Changing the prompt does not update an existing reviewer session.
 
-无法启动 daemon、agentapi 不可用、超时或无法解析模型响应时返回 `deny`。没有直接调用 `agy` 的备用审批路径。非法 hook 输入返回 `ask`。熔断器触发时返回 `force_ask`。
+Failure to start the daemon, an unavailable `agentapi`, timeouts, or unparseable model responses result in `deny`. There is no alternate review path that directly invokes `agy`. Invalid hook input returns `ask`. A tripped circuit breaker returns `force_ask`.
 
-## 日志
+## Logs
 
-两种模式默认写入插件自己的 `~/.gemini/agy-auto-approve/` 目录：`approvals.jsonl` 保存关联的输入、模型请求/响应及最终决定，`auto-approve.log` 保存文本摘要。环境变量 `AGY_AUTO_APPROVE_LOG_DIR` 可覆盖日志位置。
+Both modes write to the plugin's own `~/.gemini/agy-auto-approve/` directory by default. `approvals.jsonl` stores correlated inputs, model requests and responses, and final decisions; `auto-approve.log` stores text summaries. Set `AGY_AUTO_APPROVE_LOG_DIR` to override the log location.
 
 ```bash
 agy-auto-approve logs
@@ -76,4 +85,4 @@ agy-auto-approve logs -f
 agy-auto-approve logs show APPROVAL_ID
 ```
 
-`logs` 直接读取本地文件，不会启动 daemon。详见 [README](../README.md)。
+`logs` reads local files directly without starting the daemon. See the [README](../README.md).

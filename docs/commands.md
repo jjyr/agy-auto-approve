@@ -126,6 +126,17 @@ List options can be combined. Normal lists show newest records first. Follow mod
 
 Logs are read directly from `~/.gemini/agy-auto-approve/approvals.jsonl`; the daemon does not need to be running. These records contain approval-service and `agentapi` output, not the subsequent tool execution's stdout/stderr. Logs are not automatically rotated or cleaned up.
 
+New approval summaries include the command and working directory when supplied in
+`CommandLine` and `Cwd`, and display the pipeline stage. `reviewer_error` indicates
+an approval infrastructure or response-format failure, whereas `reviewer` indicates
+a parsed reviewer decision. Older records may lack the command and directory;
+`logs show ID` still exposes their original hook input.
+
+Detailed `agentapi_request` events include the daemon PID, operation, effective
+search PATH, and CLI fallback directory. Process errors include the operation and
+failure stage; session persistence errors identify the affected path. Logs do not
+dump the full process environment.
+
 To inspect records in a different directory, including the legacy location:
 
 ```bash
