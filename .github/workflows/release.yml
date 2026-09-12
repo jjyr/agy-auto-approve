@@ -1,0 +1,129 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check stable tag matches Cargo version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          version=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "agy-auto-approve") | .version')
+          test "$RELEASE_TAG" = "v$version"
+
+  build:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_TARGET: ${{ matrix.target }}
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+      - name: Install native musl compiler
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
+          echo 'CC=musl-gcc' >> "$GITHUB_ENV"
+          echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc' >> "$GITHUB_ENV"
+          echo 'CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc' >> "$GITHUB_ENV"
+      - name: Validate and test target
+        run: |
+          cargo fmt --check
+          sh -n scripts/install.sh
+          cargo clippy --all-targets --target "$RELEASE_TARGET" --locked -- -D warnings
+          cargo test --target "$RELEASE_TARGET" --locked
+      - name: Build and package binary
+        run: |
+          set -euo pipefail
+          cargo build --release --target "$RELEASE_TARGET" --locked
+          binary="target/$RELEASE_TARGET/release/agy-auto-approve"
+          test "$("$binary" --version)" = "agy-auto-approve ${RELEASE_TAG#v}"
+          if [ "$RUNNER_OS" = Linux ]; then
+            # A musl target alone is insufficient if build flags accidentally enable dynamic linking.
+            readelf -l "$binary" > program-headers.txt
+            readelf -d "$binary" > dynamic-section.txt
+            if grep -q INTERP program-headers.txt || grep -q NEEDED dynamic-section.txt; then
+              echo 'Linux binary unexpectedly requires a dynamic loader or shared libraries' >&2
+              exit 1
+            fi
+          fi
+          mkdir -p dist
+          COPYFILE_DISABLE=1 tar -czf "dist/agy-auto-approve-$RELEASE_TAG-$RELEASE_TARGET.tar.gz" \
+            -C "target/$RELEASE_TARGET/release" agy-auto-approve
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          merge-multiple: true
+          path: dist
+      - name: Verify complete asset set and generate checksums
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-apple-darwin aarch64-apple-darwin; do
+            test -f "agy-auto-approve-$RELEASE_TAG-$target.tar.gz"
+          done
+          test "$(find . -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 4
+          sha256sum ./*.tar.gz | sed 's|  ./|  |' > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - name: Upload draft assets then publish
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          if draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft'); then
+            test "$draft" = true || { echo 'Refusing to overwrite a published release' >&2; exit 1; }
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" ./*.tar.gz SHA256SUMS --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest

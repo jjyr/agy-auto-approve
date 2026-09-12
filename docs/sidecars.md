@@ -5,7 +5,7 @@ CLI 和 Antigravity Desktop 使用相同的 Rust 可执行文件、hook 协议�
 ## 启动与安装
 
 ```bash
-./scripts/install.sh                  # 构建、安装并注册两种模式
+./scripts/install.sh                  # 下载最新 Release、安装并注册两种模式
 ./scripts/install.sh --cli-only       # 仅注册 CLI
 ./scripts/install.sh --desktop-only   # 仅注册 Desktop
 ```

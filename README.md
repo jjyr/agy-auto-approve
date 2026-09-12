@@ -2,30 +2,34 @@
 
 Antigravity CLI / Desktop 的自动审批 hook 与持久化审批 daemon，使用 Rust 构建为一个可执行文件。运行时不需要 Python、虚拟环境或单独安装 Tree-sitter；AI 审批仍依赖宿主提供的 `agentapi` 命令及其登录状态。
 
-## 构建与安装
+## 安装
 
-支持 macOS / Linux（使用 Unix domain socket），构建需要 Rust 工具链和 C 编译器。
+支持 macOS / Linux 的 ARM64 和 x86_64。默认安装 GitHub Releases 预编译二进制，无需 Rust、Cargo 或 Python；需要 `curl`、`tar`，以及 `sha256sum` 或 `shasum`。Linux 使用 musl 静态链接版本。
 
 ```bash
-./scripts/install.sh
+curl -fsSL https://raw.githubusercontent.com/jjyr/agy-auto-approve/main/scripts/install.sh | sh
 ```
 
-安装脚本默认构建当前 checkout，将二进制安装到 `~/.local/bin/agy-auto-approve`，然后注册 CLI hook 和 Desktop sidecar。它使用原子替换更新二进制，不需要 sudo，也不修改 shell 配置。将 `~/.local/bin` 加入 PATH 后即可使用命令。
+安装脚本识别系统和 CPU，将最新正式 Release 解析为固定 tag，下载对应压缩包与 `SHA256SUMS`，校验后安装到 `~/.local/bin/agy-auto-approve`，然后注册 CLI hook 和 Desktop sidecar。它使用原子替换更新二进制，不需要 sudo，也不修改 shell 配置。将 `~/.local/bin` 加入 PATH 后即可使用命令。下载、校验或版本检查失败时保留已有安装。
 
 ```bash
-# 已有匹配操作系统 / CPU 架构的预编译二进制：无需 Rust 工具链
-./scripts/install.sh --binary /path/to/agy-auto-approve
+# 指定版本、仅注册 CLI
+curl -fsSL https://raw.githubusercontent.com/jjyr/agy-auto-approve/main/scripts/install.sh | \
+  sh -s -- --version v0.3.0 --cli-only
 
-# 自定义安装目录、仅注册 CLI，或只安装不注册
-./scripts/install.sh --bin-dir "$HOME/bin" --cli-only
-./scripts/install.sh --binary ./target/release/agy-auto-approve --no-register
+# 使用本地脚本：默认也是下载 Release
+sh scripts/install.sh --bin-dir "$HOME/bin" --no-register
+
+# 安装已有二进制，或构建本地源码
+./scripts/install.sh --binary /path/to/agy-auto-approve
+./scripts/install.sh --source .
 
 # 也支持 Cargo 从当前源码安装
 cargo install --path . --locked
 agy-auto-approve register
 ```
 
-crate 和 bin 均命名为 `agy-auto-approve`。目前尚未发布到 crates.io，因此暂时使用上述源码或本地二进制安装方式；首次发布后才可使用 `cargo install agy-auto-approve --locked`。安装脚本不依赖尚未发布的 crates.io 包或 GitHub Release，也不自动下载预编译包。
+crate 和 bin 均命名为 `agy-auto-approve`。当前分发方式是 GitHub Releases，不依赖 crates.io。源码构建需要 Rust 工具链和 C 编译器。首次正式 Release 发布前，下载方式会明确报错，可使用 `--source` 或 `--binary` 安装。
 
 `register` 默认配置 CLI 与 Desktop，保留其他配置项；重复执行可更新已有 hook：写入 `~/.gemini/config/hooks.json`，在已有 CLI settings 中补齐开发命令权限，并部署和启用 Desktop sidecar。不要移动注册后的二进制文件；如移动，重新执行注册。
 
@@ -141,6 +145,28 @@ cargo test --locked
 Rust 测试覆盖 AST、黑白名单、容错响应、熔断持久化，以及真实二进制的 hook、daemon 自动启动/停止/空闲退出、会话复用/重建和注册流程。集成测试使用临时 HOME 和模拟 `agentapi`，无需登录或 Python。
 
 架构说明：[审批架构参考](docs/auto_approver_architecture.md)、[Sidecar 与 daemon](docs/sidecars.md)。
+
+## 发布版本
+
+普通分支 push 和 PR 运行测试，不发布二进制。提交代码并更新 `Cargo.toml` / `Cargo.lock` 中的包版本后，推送对应正式版本 tag：
+
+```bash
+git tag v0.3.0
+git push origin v0.3.0
+```
+
+[Release workflow](.github/workflows/release.yml) 校验 tag 为 `vX.Y.Z` 且与 Cargo 版本一致，在四种原生 runner 上执行检查、测试和构建：
+
+| 系统 | Rust target | GitHub runner |
+| --- | --- | --- |
+| Linux x86_64 | `x86_64-unknown-linux-musl` | `ubuntu-24.04` |
+| Linux ARM64 | `aarch64-unknown-linux-musl` | `ubuntu-24.04-arm` |
+| macOS Intel | `x86_64-apple-darwin` | `macos-15-intel` |
+| macOS Apple Silicon | `aarch64-apple-darwin` | `macos-15` |
+
+产物命名为 `agy-auto-approve-vX.Y.Z-<target>.tar.gz`，每个包只包含一个 `agy-auto-approve` 可执行文件。Linux 检查产物没有动态加载器或共享库依赖；macOS 构建目标最低为 macOS 11。
+
+全部构建成功后，发布任务生成 `SHA256SUMS`，上传四个包及校验文件到草稿 Release，再将其公开为最新正式版。失败时不会将未完成的草稿设为最新版本；可以重跑补全草稿，但已公开版本禁止覆盖。Workflow 使用仓库自带 `GITHUB_TOKEN`，只给发布任务 `contents: write` 权限，不需要另配 PAT。这里的校验用于下载完整性验证，二进制不包含 Apple Developer ID 签名或公证。
 
 ## License
 
