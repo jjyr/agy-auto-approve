@@ -2,6 +2,10 @@
 
 Automatic approval hooks and a persistent approval daemon for Antigravity CLI and Desktop, built as a single Rust executable. AI reviews use the host's `agentapi` command and require an active login.
 
+Reviewer subprocesses preserve the host's `PATH` and append
+`$HOME/.gemini/antigravity-cli/bin` as a fallback for CLI launches. Host-injected
+commands take priority. This lookup works on both macOS and Linux.
+
 ## How it works
 
 CLI and Desktop share the same approval pipeline. Local rules handle allowlisted

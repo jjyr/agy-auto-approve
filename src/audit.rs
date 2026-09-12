@@ -108,6 +108,7 @@ fn summary(entry: &Value, filter: &Filter) -> Option<Value> {
     }
     Some(json!({"id":entry["id"], "timestamp":entry["timestamp"],
             "tool":d["tool"], "conversation_id":d["conversation_id"], "decision":d["output"]["decision"],
+            "command":d["command"], "cwd":d["cwd"],
             "reason":d["output"]["reason"], "stage":d["stage"], "duration_ms":d["duration_ms"]}))
 }
 pub fn show(id: &str) -> Result<Value> {
@@ -155,13 +156,19 @@ fn print_record(record: &Value, json_output: bool) {
                 .collect()
         };
         println!(
-            "{}  {}  {:9}  {}\n  {}",
+            "{}  {}  {:9}  {}  stage={}\n  {}",
             text("timestamp"),
             text("id"),
             text("decision"),
             text("tool"),
+            text("stage"),
             text("reason")
         );
+        for key in ["command", "cwd"] {
+            if record[key].as_str().is_some_and(|s| !s.is_empty()) {
+                println!("  {key}: {}", text(key));
+            }
+        }
     }
 }
 

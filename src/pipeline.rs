@@ -191,6 +191,9 @@ pub async fn evaluate(payload: &Value) -> Value {
         &id,
         "hook_result",
         json!({"tool":payload["toolCall"]["name"],
+        "command":payload["toolCall"]["args"]["CommandLine"],
+        "cwd":payload["toolCall"]["args"]["Cwd"],
+        "hook_pid":std::process::id(),
         "conversation_id":conversation_id(payload), "output":output, "stage":stage,
         "duration_ms":started.elapsed().as_millis()}),
     );
@@ -252,6 +255,9 @@ async fn evaluate_inner(payload: &Value, id: &str, stage: &mut &'static str) -> 
         }
     };
     audit::record(id, "assessment", json!({"assessment":assessment}));
+    if assessment.error_stage.is_some() {
+        *stage = "reviewer_error";
+    }
     if let Err(e) = breaker.record(&assessment.outcome) {
         *stage = "state_error";
         return result(

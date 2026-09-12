@@ -67,6 +67,102 @@ impl Drop for Sandbox {
 fn payload(command: &str) -> String {
     json!({"conversationId":"test", "toolCall":{"name":"run_command","args":{"CommandLine":command}}, "workspacePaths":[]}).to_string()
 }
+
+#[test]
+fn agentapi_cli_fallback_preserves_host_path_priority() {
+    for host_available in [false, true] {
+        let s = Sandbox::new();
+        let fallback = s.dir.path().join(".gemini/antigravity-cli/bin");
+        fs::create_dir_all(&fallback).unwrap();
+        s.mock(
+            r#"
+case "$1" in
+  new-conversation) echo '{"conversationId":"fallback"}';;
+  send-message) echo '{"outcome":"allow","rationale":"CLI fallback"}';;
+esac
+"#,
+        );
+        fs::rename(s.dir.path().join("agentapi"), fallback.join("agentapi")).unwrap();
+        if host_available {
+            s.mock(
+                r#"
+case "$1" in
+  new-conversation) echo '{"conversationId":"host"}';;
+  send-message) echo '{"outcome":"deny","rationale":"host reviewer decision"}';;
+esac
+"#,
+            );
+        }
+        let input = json!({"conversationId":"path-test", "toolCall":{
+            "name":"run_command", "args":{"CommandLine":"git status", "Cwd":"/tmp/work space"}}});
+        let output = s.hook(&input.to_string());
+        assert_eq!(
+            output["decision"],
+            if host_available { "deny" } else { "allow" }
+        );
+        assert!(
+            output["reason"]
+                .as_str()
+                .unwrap()
+                .contains(if host_available {
+                    "host reviewer decision"
+                } else {
+                    "CLI fallback"
+                })
+        );
+        let records: Value = serde_json::from_slice(&s.run(&["logs", "--json"]).stdout).unwrap();
+        assert_eq!(records[0]["command"], "git status");
+        assert_eq!(records[0]["cwd"], "/tmp/work space");
+        assert_eq!(records[0]["stage"], "reviewer");
+        let plain = s.run(&["logs"]);
+        let plain = String::from_utf8(plain.stdout).unwrap();
+        assert!(plain.contains("command: git status"));
+        assert!(plain.contains("cwd: /tmp/work space"));
+        let trace: Value = serde_json::from_slice(
+            &s.run(&["logs", "show", records[0]["id"].as_str().unwrap()])
+                .stdout,
+        )
+        .unwrap();
+        let request = trace["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["event"] == "agentapi_request")
+            .unwrap();
+        assert_eq!(
+            request["data"]["search_path"],
+            json!([s.dir.path(), fallback])
+        );
+    }
+}
+
+#[test]
+fn missing_agentapi_logs_search_context_and_infrastructure_failure() {
+    let s = Sandbox::new();
+    let output = s.hook(&payload("git status"));
+    assert_eq!(output["decision"], "deny");
+    assert!(
+        output["reason"]
+            .as_str()
+            .unwrap()
+            .contains("agentapi new-conversation")
+    );
+    let records: Value = serde_json::from_slice(&s.run(&["logs", "--json"]).stdout).unwrap();
+    assert_eq!(records[0]["stage"], "reviewer_error");
+    let trace: Value = serde_json::from_slice(
+        &s.run(&["logs", "show", records[0]["id"].as_str().unwrap()])
+            .stdout,
+    )
+    .unwrap();
+    let events = trace["events"].as_array().unwrap();
+    let error = events
+        .iter()
+        .find(|e| e["event"] == "agentapi_error")
+        .unwrap();
+    assert_eq!(error["data"]["operation"], "new-conversation");
+    assert_eq!(error["data"]["stage"], "spawn");
+    assert!(!events.iter().any(|e| e["event"] == "agentapi_response"));
+}
 #[test]
 fn lifecycle_auto_spawn_fail_closed_and_breaker() {
     let s = Sandbox::new();
