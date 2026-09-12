@@ -39,23 +39,37 @@ subsequent requests. Decisions and reasons are logged locally. See the
 
 ## Install
 
-Install the latest release on macOS or Linux (ARM64 and x86_64):
+Choose one way to install the binary.
+
+Download a [GitHub Release](https://github.com/jjyr/agy-auto-approve/releases/latest)
+(macOS or Linux, ARM64 or x86_64). Set the release tag and your platform target:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jjyr/agy-auto-approve/main/scripts/install.sh | sh
+VERSION=v0.4.2
+TARGET=aarch64-apple-darwin
+curl -fLO "https://github.com/jjyr/agy-auto-approve/releases/download/$VERSION/agy-auto-approve-$VERSION-$TARGET.tar.gz"
+tar -xzf "agy-auto-approve-$VERSION-$TARGET.tar.gz"
+mkdir -p ~/.local/bin
+mv agy-auto-approve ~/.local/bin/
 ```
 
-The installer verifies the download, installs to `~/.local/bin`, and registers the CLI hook and Desktop sidecar. No Rust or Python is required. Make sure `~/.local/bin` is on your `PATH`.
+Targets: `aarch64-apple-darwin`, `x86_64-apple-darwin`,
+`aarch64-unknown-linux-musl`, `x86_64-unknown-linux-musl`.
+Make sure `~/.local/bin` is on your `PATH`.
 
-## Development install
-
-Requires Git, Rust/Cargo, and a C compiler.
+Or install from crates.io once the crate is published (requires Rust/Cargo and a C compiler):
 
 ```bash
-git clone https://github.com/jjyr/agy-auto-approve.git
-cd agy-auto-approve
-sh scripts/install.sh --source .
+cargo install agy-auto-approve --locked
 ```
+
+Then install the CLI hook and Desktop sidecar:
+
+```bash
+agy-auto-approve install
+```
+
+See the [command reference](docs/commands.md) for upgrades and installation options.
 
 ## Logs
 

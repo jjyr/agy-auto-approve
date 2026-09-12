@@ -15,7 +15,6 @@ jobs:
         with:
           components: rustfmt, clippy
       - run: cargo fmt --check
-      - run: sh -n scripts/install.sh
       - run: python3 -m unittest discover -s tests -p 'test_bump_version.py'
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked

@@ -1,4 +1,4 @@
-use agy_auto_approve::{audit, config, daemon, pipeline, register};
+use agy_auto_approve::{audit, config, daemon, pipeline, register, upgrade};
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
@@ -39,8 +39,13 @@ enum Commands {
         #[command(subcommand)]
         command: DaemonCommand,
     },
+    /// Upgrade the executable and refresh installed plugin configuration.
+    Update {
+        #[arg(long)]
+        version: Option<String>,
+    },
     /// Register this executable for CLI hooks and Desktop sidecars (both by default).
-    Register {
+    Install {
         #[arg(long, conflicts_with = "desktop_only")]
         cli_only: bool,
         #[arg(long)]
@@ -128,7 +133,8 @@ async fn main() -> Result<()> {
                 }
             }
         },
-        Commands::Register {
+        Commands::Update { version } => upgrade::update(version.as_deref()).await?,
+        Commands::Install {
             cli_only,
             desktop_only,
         } => register::register(cli_only, desktop_only)?,

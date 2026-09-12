@@ -14,9 +14,9 @@ environment.
 ## Startup and installation
 
 ```bash
-./scripts/install.sh                  # Download the latest release, install, and register both modes
-./scripts/install.sh --cli-only       # Register CLI only
-./scripts/install.sh --desktop-only   # Register Desktop only
+agy-auto-approve install                  # Install both modes using the current binary
+agy-auto-approve install --cli-only       # Register CLI only
+agy-auto-approve install --desktop-only   # Register Desktop only
 ```
 
 In CLI mode, `agy-auto-approve hook` probes the Unix socket when AI review is needed. If the daemon is unavailable, the hook starts the same executable with `daemon run` and probes for readiness within a three-second startup deadline. Read-only allowlist decisions, blocklist decisions, and an already-tripped circuit breaker do not require starting the daemon.
@@ -30,7 +30,7 @@ agy-auto-approve daemon stop
 agy-auto-approve daemon run --idle-timeout 0
 ```
 
-The daemon exits after 1,800 idle seconds by default; `--idle-timeout 0` disables idle shutdown. Active reviews prevent idle shutdown, and status and stop requests can be handled during model calls. After an upgrade, CLI users should restart the daemon; Desktop users should register again and restart the host. Replacing the binary on disk does not update an already-running process.
+The daemon exits after 1,800 idle seconds by default; `--idle-timeout 0` disables idle shutdown. Active reviews prevent idle shutdown, and status and stop requests can be handled during model calls. `agy-auto-approve update` refreshes enabled plugin configurations and stops the old daemon; Desktop users should then restart the host. Replacing the binary on disk does not update an already-running process.
 
 ## Request flow
 
