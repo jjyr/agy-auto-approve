@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bump Cargo versions, commit them, and create a local release tag."""
+"""Bump Cargo versions and commit them for a release PR (default: patch)."""
 
 import argparse
 import os
@@ -77,10 +77,11 @@ def main():
     subprocess.run(["cargo", "metadata", "--offline", "--locked", "--no-deps",
                     "--format-version", "1"], check=True, stdout=subprocess.DEVNULL)
     git("add", "--", "Cargo.toml", "Cargo.lock")
-    subprocess.run(["git", "commit", "-m", f"chore: release {tag}"], check=True)
-    git("tag", "-a", tag, "-m", f"Release {tag}")
-    print(f"Bumped {current} -> {version}; created local tag {tag}.")
-    print(f"Publish with: git push --atomic origin HEAD:refs/heads/{branch} refs/tags/{tag}")
+    subprocess.run(["git", "commit", "-m", f"chore: bump version to {version}"], check=True)
+    print(f"Bumped {current} -> {version}; committed on {branch}. No tag created.")
+    print("Next: push this branch and open a PR into main.")
+    print(f"After the PR is merged and CI passes, create annotated tag {tag} on the")
+    print(f"merged main commit with Cargo version {version}, then push the tag to release.")
 
 
 if __name__ == "__main__":

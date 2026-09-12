@@ -31,6 +31,7 @@ class BumpVersionTests(unittest.TestCase):
         self.git("add", ".")
         self.git("commit", "-m", "Initial")
         self.initial = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-b", "release-prep")
 
     def git(self, *args):
         return subprocess.check_output(["git", *args], cwd=self.repo, text=True,
@@ -40,11 +41,23 @@ class BumpVersionTests(unittest.TestCase):
         return subprocess.run([sys.executable, str(self.repo / "scripts/bump-version.py"), *args],
                               cwd=self.temp.name, text=True, capture_output=True)
 
-    def test_bump_commit_and_annotated_tag(self):
+    def assert_version(self, expected):
+        for filename in ["Cargo.toml", "Cargo.lock"]:
+            text = (self.repo / filename).read_text()
+            version = re.search(r'\nversion = "([^"]+)"', text).group(1)
+            self.assertEqual(version, expected)
+        self.assertEqual(self.git("tag", "--list"), "")
+
+    def test_bump_commit_without_tag(self):
+        before_manifest = (self.repo / "Cargo.toml").read_text()
+        current = re.search(r'\nversion = "([^"]+)"', before_manifest).group(1)
+        major, minor, _ = map(int, current.split("."))
+        expected = f"{major}.{minor + 1}.0"
         result = self.bump("minor")
         self.assertEqual(result.returncode, 0, result.stderr)
-        tag = self.git("describe", "--exact-match", "HEAD")
-        self.assertEqual(self.git("cat-file", "-t", tag), "tag")
+        self.assert_version(expected)
+        self.assertEqual(self.git("branch", "--show-current"), "release-prep")
+        self.assertEqual(self.git("rev-parse", "main"), self.initial)
         self.assertEqual(self.git("rev-parse", "HEAD^"), self.initial)
         self.assertEqual(self.git("status", "--porcelain"), "")
         self.assertEqual(self.git("diff", "--name-only", "HEAD^", "HEAD").splitlines(),
@@ -54,26 +67,27 @@ class BumpVersionTests(unittest.TestCase):
             after = (self.repo / filename).read_text().strip()
             old = re.search(r'\nversion = "([^"]+)"', before).group(1)
             self.assertEqual(after, before.replace(f'version = "{old}"',
-                                                   f'version = "{tag[1:]}"', 1))
-        self.assertIn("git push --atomic", result.stdout)
+                                                   f'version = "{expected}"', 1))
+        self.assertIn("open a PR into main", result.stdout)
+        self.assertIn("After the PR is merged and CI passes", result.stdout)
 
     def test_explicit_version(self):
         result = self.bump("v99.0.0")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.git("describe", "--exact-match"), "v99.0.0")
+        self.assert_version("99.0.0")
 
     def test_patch_and_major(self):
         self.assertEqual(self.bump("99.1.2").returncode, 0)
-        for mode, expected in [("patch", "v99.1.3"), ("major", "v100.0.0")]:
+        for mode, expected in [("patch", "99.1.3"), ("major", "100.0.0")]:
             result = self.bump(mode)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(self.git("describe", "--exact-match"), expected)
+            self.assert_version(expected)
 
     def test_no_argument_defaults_to_patch(self):
         self.assertEqual(self.bump("99.1.2").returncode, 0)
         result = self.bump()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.git("describe", "--exact-match"), "v99.1.3")
+        self.assert_version("99.1.3")
 
     def test_invalid_or_lower_versions_leave_tree_unchanged(self):
         for version in ["0.0.0", "01.2.3", "1.2.3-beta", "nonsense"]:
