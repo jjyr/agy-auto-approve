@@ -2,6 +2,37 @@
 
 Automatic approval hooks and a persistent approval daemon for Antigravity CLI and Desktop, built as a single Rust executable. AI reviews use the host's `agentapi` command and require an active login.
 
+## How it works
+
+CLI and Desktop share the same approval pipeline. Local rules handle allowlisted
+read-only tools and blocked commands; other requests go to an AI reviewer that
+assesses risk and user authorization.
+
+```text
+Antigravity CLI / Desktop
+           |
+     Approval hook
+           |
+     Read-only tool? -------- yes ------> Allow
+           | no
+     Blocklisted command? -- yes ------> Deny
+           | no
+     Circuit breaker open? - yes ------> Ask user
+           | no
+     Persistent daemon
+           |
+     agentapi AI reviewer -------------> Allow / Deny
+           |
+     Error or timeout -----------------> Deny
+```
+
+The daemon reuses a reviewer session across requests, allowing the model service
+to reuse KV/prompt caches for shared context. Cache hits can reduce repeated
+processing and input-token costs, depending on the provider's caching and pricing.
+Repeated AI-review denials trip the circuit breaker, requiring user review on
+subsequent requests. Decisions and reasons are logged locally. See the
+[pipeline details](docs/sidecars.md).
+
 ## Install
 
 Install the latest release on macOS or Linux (ARM64 and x86_64):
