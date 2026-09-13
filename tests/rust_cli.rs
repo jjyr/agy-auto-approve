@@ -25,6 +25,8 @@ impl Sandbox {
     fn command(&self) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_agy-auto-approve"));
         c.env("HOME", self.dir.path())
+            .env_remove("AGY_AUTO_APPROVE_MODEL")
+            .env_remove("AGY_AUTO_APPROVE_PROMPT")
             .env("AGY_APPROVER_SOCKET", &self.socket)
             .env("AGY_APPROVER_STATE_DIR", self.dir.path().join("state"))
             .env("AGY_AUTO_APPROVE_LOG_DIR", self.dir.path().join("logs"))
@@ -332,13 +334,13 @@ esac
 fn prompt_precedence_and_script_inspection() {
     for (workspace, environment, expected) in [
         (false, false, "global"),
-        (true, false, "workspace"),
+        (true, false, "global"),
         (true, true, "environment"),
     ] {
         let s = Sandbox::new();
         let global = s.dir.path().join(".gemini/config");
         fs::create_dir_all(&global).unwrap();
-        fs::write(global.join("agy-auto-approve-prompt.txt"), "global").unwrap();
+        fs::write(global.join("agy-auto-approve.toml"), "prompt = 'global'").unwrap();
         if workspace {
             fs::create_dir_all(s.dir.path().join(".agents")).unwrap();
             fs::write(
@@ -792,4 +794,149 @@ fn registration_modes_preserve_existing_permissions() {
             assert!(!s.dir.path().join(".gemini/config/config.json").exists());
         }
     }
+}
+
+#[test]
+fn global_config_edit_and_precedence() {
+    let s = Sandbox::new();
+    let out = s.run(&["config", "--json"]);
+    assert!(out.status.success());
+    let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(value["reviewer"]["model"].is_null());
+    assert!(!s.dir.path().join(".gemini/config").exists());
+    let editor = s.dir.path().join("editor with spaces");
+    fs::write(&editor, "#!/bin/sh\n[ \"$1\" = --wait ] || exit 5\nprintf 'model = \"pro\"\nprompt = \"custom prompt\"\n' > \"$2\"\n").unwrap();
+    fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
+    let out = s
+        .command()
+        .args(["config", "--edit"])
+        .env("VISUAL", format!("'{}' --wait", editor.display()))
+        .env("EDITOR", "/bin/false")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = s
+        .command()
+        .args(["config", "--json"])
+        .env("AGY_AUTO_APPROVE_MODEL", "flash")
+        .output()
+        .unwrap();
+    let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["reviewer"]["model"], "flash");
+    assert_eq!(value["reviewer"]["model_source"], "AGY_AUTO_APPROVE_MODEL");
+    assert_eq!(value["reviewer"]["prompt"], "custom prompt");
+    assert!(!s.run(&["config", "--local"]).status.success());
+    assert!(!s.run(&["config", "--edit", "--json"]).status.success());
+    assert!(
+        !s.command()
+            .args(["config", "--edit"])
+            .env("VISUAL", "/bin/false")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    fs::write(
+        s.dir.path().join(".gemini/config/agy-auto-approve.toml"),
+        "model = 'unsupported'",
+    )
+    .unwrap();
+    assert!(!s.run(&["config"]).status.success());
+    assert!(!s.socket.exists());
+}
+
+#[test]
+fn restart_resets_session_and_applies_model_and_prompt() {
+    let s = Sandbox::new();
+    s.mock(
+        r#"
+case "$1" in
+  new-conversation) printf '%s\n' "$@" >> "$HOME/created"; echo '{"conversationId":"reviewer"}';;
+  send-message) echo '{"outcome":"allow"}';;
+esac
+"#,
+    );
+    // Restart also starts a stopped daemon and removes a persisted session.
+    fs::create_dir_all(s.dir.path().join("state")).unwrap();
+    fs::write(
+        s.dir.path().join("state/reviewer_session.json"),
+        r#"{"conversationId":"old"}"#,
+    )
+    .unwrap();
+    assert!(s.run(&["daemon", "restart"]).status.success());
+    assert!(!s.dir.path().join("state/reviewer_session.json").exists());
+    assert_eq!(s.hook(&payload("cargo test"))["decision"], "allow");
+    let before = fs::read_to_string(s.dir.path().join("created")).unwrap();
+    assert!(!before.contains("--model="));
+    fs::create_dir_all(s.dir.path().join(".gemini/config")).unwrap();
+    fs::write(
+        s.dir.path().join(".gemini/config/agy-auto-approve.toml"),
+        "model = 'pro'\nprompt = 'new prompt'\n",
+    )
+    .unwrap();
+    assert_eq!(s.hook(&payload("cargo test"))["decision"], "allow");
+    assert_eq!(
+        fs::read_to_string(s.dir.path().join("created")).unwrap(),
+        before
+    );
+    assert!(s.run(&["daemon", "stop"]).status.success());
+    assert_eq!(s.hook(&payload("cargo test"))["decision"], "allow");
+    assert_eq!(
+        fs::read_to_string(s.dir.path().join("created")).unwrap(),
+        before
+    );
+    assert!(s.run(&["daemon", "restart"]).status.success());
+    assert_eq!(s.hook(&payload("cargo test"))["decision"], "allow");
+    let after = fs::read_to_string(s.dir.path().join("created")).unwrap();
+    assert_eq!(
+        &after[before.len()..],
+        "new-conversation\n--title=Guardian Approver Session\n--model=pro\nnew prompt\n"
+    );
+    fs::write(
+        s.dir.path().join(".gemini/config/agy-auto-approve.toml"),
+        "model = 'bad'\n",
+    )
+    .unwrap();
+    assert!(s.run(&["daemon", "restart"]).status.success());
+    assert_eq!(s.hook(&payload("cargo test"))["decision"], "deny");
+    assert_eq!(
+        fs::read_to_string(s.dir.path().join("created")).unwrap(),
+        after
+    );
+}
+
+#[test]
+fn old_global_text_files_are_ignored_when_reading_and_creating_config() {
+    let s = Sandbox::new();
+    let global = s.dir.path().join(".gemini/config");
+    fs::create_dir_all(&global).unwrap();
+    fs::write(global.join("agy-auto-approve-prompt.txt"), "legacy prompt").unwrap();
+    fs::write(global.join("agy-auto-approve-model.txt"), "legacy model").unwrap();
+    let out = s.run(&["config", "--json"]);
+    assert!(out.status.success());
+    let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(value["reviewer"]["model"].is_null());
+    assert_eq!(
+        value["reviewer"]["prompt"],
+        include_str!("../src/prompt.txt")
+    );
+    assert_eq!(value["reviewer"]["prompt_source"], "default");
+    let out = s
+        .command()
+        .args(["config", "--edit"])
+        .env("VISUAL", "/usr/bin/true")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let file: toml::Value =
+        toml::from_str(&fs::read_to_string(global.join("agy-auto-approve.toml")).unwrap()).unwrap();
+    assert_eq!(file["model"].as_str(), Some(""));
+    assert_eq!(
+        file["prompt"].as_str(),
+        Some(include_str!("../src/prompt.txt"))
+    );
 }

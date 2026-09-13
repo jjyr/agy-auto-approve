@@ -1,5 +1,5 @@
 use agy_auto_approve::{audit, config, daemon, pipeline, register, upgrade};
-use anyhow::{Result, bail};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 use std::io::Read;
@@ -14,6 +14,13 @@ struct Cli {
 enum Commands {
     /// Read a PreToolUse JSON payload on stdin; emit exactly one result on stdout.
     Hook,
+    /// Show global reviewer settings, or edit the global TOML file.
+    Config {
+        #[arg(long, conflicts_with = "json")]
+        edit: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// List approval logs, or inspect the full input/output trace of one approval.
     #[command(args_conflicts_with_subcommands = true)]
     Logs {
@@ -57,6 +64,8 @@ enum DaemonCommand {
     Start,
     Status,
     Stop,
+    /// Stop the daemon, forget the cached reviewer conversation, and start again.
+    Restart,
     Run {
         #[arg(long, default_value_t = 1800)]
         idle_timeout: u64,
@@ -133,6 +142,13 @@ async fn main() -> Result<()> {
                 }
             }
         },
+        Commands::Config { edit, json } => {
+            if edit {
+                config::edit()?;
+            } else {
+                config::show(json)?;
+            }
+        }
         Commands::Update { version } => upgrade::update(version.as_deref()).await?,
         Commands::Install {
             cli_only,
@@ -155,20 +171,10 @@ async fn main() -> Result<()> {
                 }
             }
             DaemonCommand::Stop => {
-                let v =
-                    daemon::request(&config::socket_path(), &json!({"action":"stop"}), 1).await?;
-                if v["status"] != "stopping" {
-                    bail!("Unexpected stop response: {v}");
-                }
-                for _ in 0..100 {
-                    if !config::socket_path().exists() {
-                        println!("{}", json!({"status":"stopped"}));
-                        return Ok(());
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                }
-                bail!("Daemon acknowledged stop but socket still exists");
+                daemon::stop().await?;
+                println!("{}", json!({"status":"stopped"}));
             }
+            DaemonCommand::Restart => println!("{}", daemon::restart().await?),
         },
     }
     Ok(())

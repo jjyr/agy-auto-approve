@@ -72,11 +72,19 @@ Installation uses the executable's absolute path. If you move it, run `install` 
 agy-auto-approve daemon start                 # Start in the background
 agy-auto-approve daemon status                # Inspect the current daemon
 agy-auto-approve daemon stop                  # Stop and wait for socket cleanup
+agy-auto-approve daemon restart               # Restart with a fresh reviewer conversation
 agy-auto-approve daemon run                   # Run in the foreground
 agy-auto-approve daemon run --idle-timeout 0   # Disable idle shutdown
 ```
 
 `start` returns the existing daemon's status if it is already running. CLI hooks automatically start the daemon when an AI review is needed.
+
+`restart` stops the daemon, waits for its lifetime lock to be released, removes the
+local cached reviewer conversation ID, and starts the daemon. If already stopped,
+it clears the cache and starts it. The next approval creates a new conversation
+using the latest configuration; remote conversations are not deleted. Ordinary
+`stop` / `start` retains the cached conversation. Restart interrupts active reviews.
+For Desktop sidecars, restart the host if it needs to reattach to the daemon.
 
 `status` does not start the daemon. It reports the PID, version, socket, uptime, and approval counts when running; it exits with code 1 when stopped. `start`, `status`, and `stop` write JSON to stdout and diagnostics to stderr.
 
@@ -149,12 +157,50 @@ The payload must contain `toolCall.name` as a string and `toolCall.args` as an o
 | `AGY_AUTO_APPROVE_LOG_DIR` | Log directory; `~/.gemini/agy-auto-approve`. |
 | `AGY_AUTO_APPROVE_SILENT` | Set to `1` to suppress approval notices on stderr; structured logs remain enabled. |
 | `AGY_AUTO_APPROVE_PROMPT` | Override the reviewer prompt. |
+| `AGY_AUTO_APPROVE_MODEL` | Override the model tier: `flash_lite`, `flash`, or `pro`. |
 
 When a nonempty log directory is explicitly configured and no nonempty state directory is set, state is stored in the log directory's `state/` subdirectory.
 
-Prompt lookup order is the environment variable, `.agents/agy-auto-approve-prompt.txt` relative to the daemon's working directory, `~/.gemini/config/agy-auto-approve-prompt.txt`, then the [built-in prompt](../src/prompt.txt). Prompts are supplied when reviewer sessions are created; existing sessions retain their original prompt.
+## Configuration
 
-Model and effort settings are parsed (`AGY_AUTO_APPROVE_MODEL` and `AGY_AUTO_APPROVE_EFFORT`, defaulting to `gemini-3.7-flash` and `medium`), but are currently not forwarded to `agentapi`. The host determines the actual model.
+```bash
+agy-auto-approve config         # Show global settings, sources, and runtime paths
+agy-auto-approve config --json  # Machine-readable settings (includes the full prompt)
+agy-auto-approve config --edit  # Open the global TOML file
+agy-auto-approve daemon restart # Apply settings in a new reviewer conversation
+```
+
+The global file is `~/.gemini/config/agy-auto-approve.toml`:
+
+```toml
+# Empty means the host's default model; otherwise flash_lite, flash, or pro.
+model = ""
+prompt = """Your reviewer instructions here."""
+```
+
+`config --edit` creates a template when absent, using the host default model
+and the built-in prompt. It opens `$VISUAL`, then `$EDITOR`, falling
+back to `vi`. Editor arguments are supported (for example `EDITOR='code --wait'`);
+use a blocking editor so validation runs after saving. Invalid TOML, unknown keys,
+and unsupported model values produce an error. Editing does not restart the daemon.
+
+Precedence per setting: nonempty `AGY_AUTO_APPROVE_PROMPT` / `AGY_AUTO_APPROVE_MODEL`,
+then the TOML field, then built-in defaults. An empty TOML model explicitly
+selects the host default. An empty prompt is used literally.
+Old global `~/.gemini/config/agy-auto-approve-*.txt` files and project
+`.agents/agy-auto-approve-*.txt` files are not read or migrated. `--local`
+is unsupported. `effort` and `AGY_AUTO_APPROVE_EFFORT` are no longer supported:
+`agentapi` does not expose an effort option. Old full model identifiers such as
+`gemini-3.7-flash` must be replaced with a supported tier.
+
+Model tiers are passed as `agentapi new-conversation --model=<tier>` (supported
+by agy 1.2.2). No model flag is passed when using the host default.
+Settings are read when a reviewer conversation is created. Existing conversations
+keep their configuration, including across ordinary daemon stops and starts.
+There is no change detection or hot reload; use `daemon restart` to forget the
+cached conversation. Environment overrides use the daemon's startup environment.
+`config` shows settings resolved in the invoking process, not the active conversation.
+Runtime paths (socket, state, logs) remain controlled by the environment variables above.
 
 ## Development checks
 
