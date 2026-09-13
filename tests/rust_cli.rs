@@ -248,7 +248,7 @@ fn registration_preserves_configuration_and_uses_absolute_binary() {
     let config = s.dir.path().join(".gemini/config");
     fs::create_dir_all(&config).unwrap();
     fs::write(config.join("hooks.json"), r#"{"other":{"enabled":true}}"#).unwrap();
-    let out = s.run(&["register"]);
+    let out = s.run(&["install"]);
     assert!(
         out.status.success(),
         "{}",
@@ -261,9 +261,9 @@ fn registration_preserves_configuration_and_uses_absolute_binary() {
         .unwrap();
     assert!(command.contains(env!("CARGO_BIN_EXE_agy-auto-approve")));
     assert!(!command.contains("python"));
-    assert!(s.run(&["register"]).status.success());
+    assert!(s.run(&["install"]).status.success());
     fs::write(config.join("hooks.json"), "invalid JSON").unwrap();
-    assert!(!s.run(&["register", "--cli-only"]).status.success());
+    assert!(!s.run(&["install", "--cli-only"]).status.success());
     assert_eq!(
         fs::read_to_string(config.join("hooks.json")).unwrap(),
         "invalid JSON"
@@ -557,29 +557,17 @@ fn logs_records_failures_and_concurrent_hooks() {
 fn installer_handles_prebuilt_binary_and_paths_with_spaces() {
     let s = Sandbox::new();
     let install_dir = s.dir.path().join("bin with 'quote");
-    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/install.sh");
+    fs::create_dir_all(&install_dir).unwrap();
+    let binary = install_dir.join("agy-auto-approve");
+    fs::copy(env!("CARGO_BIN_EXE_agy-auto-approve"), &binary).unwrap();
     let install = |flags: &[&str]| {
-        Command::new("/bin/sh")
-            .arg(&script)
-            .args([
-                "--binary",
-                env!("CARGO_BIN_EXE_agy-auto-approve"),
-                "--bin-dir",
-            ])
-            .arg(&install_dir)
+        Command::new(&binary)
+            .arg("install")
             .args(flags)
             .env("HOME", s.dir.path())
             .output()
             .unwrap()
     };
-    let out = install(&["--no-register"]);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(install_dir.join("agy-auto-approve").exists());
-    assert!(!s.dir.path().join(".gemini").exists());
     let out = install(&["--cli-only"]);
     assert!(
         out.status.success(),
@@ -772,7 +760,7 @@ fn registration_modes_preserve_existing_permissions() {
         fs::create_dir_all(&cli).unwrap();
         let settings = json!({"permissions":{"allow":["file(/custom)","command(cargo)"],"deny":["command(secret)"]},"custom":true});
         fs::write(cli.join("settings.json"), settings.to_string()).unwrap();
-        let out = s.run(&["register", mode]);
+        let out = s.run(&["install", mode]);
         assert!(out.status.success());
         let actual: Value =
             serde_json::from_slice(&fs::read(cli.join("settings.json")).unwrap()).unwrap();

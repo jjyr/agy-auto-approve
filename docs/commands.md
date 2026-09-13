@@ -1,55 +1,41 @@
 # Command reference
 
-Complete command and option reference for `agy-auto-approve` and its installer.
+Complete command and option reference for `agy-auto-approve` and its installation commands.
 AI reviews require the host's `agentapi` command and an active login.
 
 ## Installation
 
-Install the latest stable release:
+Install the binary using the Release download or Cargo registry commands in the
+[README](../README.md#install), then run `agy-auto-approve install`.
+Release archives support macOS and Linux on ARM64 and x86_64.
+Release downloads also include `SHA256SUMS`; you can verify the archive against
+its matching entry using `sha256sum` (Linux) or `shasum -a 256` (macOS).
+
+## Updates
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jjyr/agy-auto-approve/main/scripts/install.sh | sh
+agy-auto-approve update                  # Upgrade to the latest stable release
+agy-auto-approve update --version v0.4.2  # Install a specific stable version
 ```
 
-The installer supports macOS and Linux on ARM64 and x86_64. Release installation requires `curl`, `tar`, and either `sha256sum` or `shasum`; it does not require Rust or Python. It verifies the checksum, installs to `~/.local/bin`, and registers both CLI hooks and the Desktop sidecar. Add the installation directory to your `PATH`.
+`update` checks the current executable's installation root and Cargo's
+`.crates2.json` records. Registry installations use `cargo install --locked --force`
+with the original root and registry index. Other standalone binaries download a
+GitHub Release using `curl`, verify SHA-256 and the executable version, then
+atomically replace the current binary. Download or validation failures leave the
+existing binary unchanged. The executable directory must be writable.
+Cargo failures are reported without falling back to Release downloads.
+Cargo Git and local-path installation sources are unsupported.
 
-To pass options to the remote installer:
+After upgrading, the new executable refreshes only the currently enabled CLI
+hook and/or Desktop sidecar. Existing configurations from older versions are
+recognized; disabled or missing integrations remain unchanged. If neither is
+enabled, run `install` to enable the plugin. Configuration refresh failures are
+reported separately from the completed binary upgrade.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/jjyr/agy-auto-approve/main/scripts/install.sh | \
-  sh -s -- --version v0.3.0 --cli-only
-```
-
-From a local checkout:
-
-```bash
-sh scripts/install.sh --help
-sh scripts/install.sh --bin-dir "$HOME/bin" --no-register
-sh scripts/install.sh --binary /path/to/agy-auto-approve
-sh scripts/install.sh --source .
-```
-
-| Option | Behavior |
-| --- | --- |
-| `--version vX.Y.Z` | Install a specific stable release instead of the latest. |
-| `--binary PATH` | Install an existing executable. |
-| `--source DIR` | Build and install a local checkout; requires Rust/Cargo and a C compiler. |
-| `--bin-dir DIR` | Set the installation directory; defaults to `AGY_INSTALL_DIR` or `~/.local/bin`. |
-| `--cli-only` | Register only CLI hooks. |
-| `--desktop-only` | Register only the Desktop sidecar. |
-| `--no-register` | Install without changing Antigravity settings. |
-| `-h`, `--help` | Show installer help. |
-
-`--version`, `--binary`, and `--source` are mutually exclusive. `--cli-only` and `--desktop-only` cannot be combined.
-
-Alternatively, install from source with Cargo and register the executable:
-
-```bash
-cargo install --path . --locked
-agy-auto-approve register
-```
-
-After upgrading, restart an existing CLI daemon with `daemon stop` and `daemon start`. For a Desktop-managed daemon, restart Desktop to load the new executable.
+A running daemon is stopped after the upgrade; the CLI starts the new version
+on its next AI review request. Restart Antigravity Desktop when its sidecar is
+enabled. A failed daemon stop is reported and may require a manual restart.
 
 ## Help and version
 
@@ -61,23 +47,24 @@ agy-auto-approve logs --help
 agy-auto-approve logs show --help
 agy-auto-approve daemon --help
 agy-auto-approve daemon run --help
-agy-auto-approve register --help
+agy-auto-approve install --help
+agy-auto-approve update --help
 agy-auto-approve hook --help
 ```
 
 Use `-h` as a short form of `--help`, or `-V` for `--version` on the top-level command.
 
-## Registration
+## Plugin installation
 
 ```bash
-agy-auto-approve register                 # Register CLI hooks and Desktop sidecar
-agy-auto-approve register --cli-only      # Register CLI hooks only
-agy-auto-approve register --desktop-only  # Register Desktop sidecar only
+agy-auto-approve install                 # Register CLI hooks and Desktop sidecar
+agy-auto-approve install --cli-only      # Register CLI hooks only
+agy-auto-approve install --desktop-only  # Register Desktop sidecar only
 ```
 
-Registration preserves unrelated settings and updates existing hooks. CLI registration writes `~/.gemini/config/hooks.json` and adds development command permissions to existing CLI settings. Desktop registration deploys and enables the sidecar. The two options are mutually exclusive.
+Installation preserves unrelated settings and updates existing hooks. CLI registration writes `~/.gemini/config/hooks.json` and adds development command permissions to existing CLI settings. Desktop registration deploys and enables the sidecar. The two options are mutually exclusive.
 
-Registration uses the executable's absolute path. If you move it, run registration again.
+Installation uses the executable's absolute path. If you move it, run `install` again.
 
 ## Daemon
 
@@ -157,7 +144,6 @@ The payload must contain `toolCall.name` as a string and `toolCall.args` as an o
 
 | Variable | Purpose / default |
 | --- | --- |
-| `AGY_INSTALL_DIR` | Installer destination; `~/.local/bin`. Overridden by `--bin-dir`. |
 | `AGY_APPROVER_SOCKET` | Daemon socket; `~/.gemini/antigravity-cli/approver.sock`. |
 | `AGY_APPROVER_STATE_DIR` | State directory; `~/.gemini/antigravity-cli/state`. |
 | `AGY_AUTO_APPROVE_LOG_DIR` | Log directory; `~/.gemini/agy-auto-approve`. |

@@ -63,7 +63,6 @@ jobs:
       - name: Validate and test target
         run: |
           cargo fmt --check
-          sh -n scripts/install.sh
           cargo clippy --all-targets --target "$RELEASE_TARGET" --locked -- -D warnings
           cargo test --target "$RELEASE_TARGET" --locked
       - name: Build and package binary
