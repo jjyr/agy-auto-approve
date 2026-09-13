@@ -71,7 +71,7 @@ The default state directory is `~/.gemini/antigravity-cli/state`. It contains `r
 
 A new reviewer session receives the prompt, and its session ID is persisted. Subsequent reviews submit only the proposed action through `send-message`. The daemon can load an existing session after a restart. If a cached session call fails, the cache is cleared, a new conversation is created, and the request is retried once. An initial failure without a cached session is denied immediately.
 
-Session reuse reduces repeated context setup, but actual cache hit rates and response times depend on the host and model service. Configuration files are resolved relative to the daemon's startup directory. Changing the prompt does not update an existing reviewer session.
+Session reuse reduces repeated context setup, but actual cache hit rates and response times depend on the host and model service. Reviewer configuration is global; project configuration files are not read. Changing the prompt or model does not update an existing reviewer session. Run `agy-auto-approve daemon restart` to clear the local session cache and create a new conversation on the next approval. Ordinary stops and starts preserve the session.
 
 Failure to start the daemon, an unavailable `agentapi`, timeouts, or unparseable model responses result in `deny`. There is no alternate review path that directly invokes `agy`. Invalid hook input returns `ask`. A tripped circuit breaker returns `force_ask`.
 

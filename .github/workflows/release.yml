@@ -16,7 +16,7 @@ jobs:
   validate:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: Check stable tag matches Cargo version
         env:
@@ -47,7 +47,7 @@ jobs:
       RELEASE_TARGET: ${{ matrix.target }}
       MACOSX_DEPLOYMENT_TARGET: '11.0'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}

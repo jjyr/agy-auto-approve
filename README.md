@@ -71,6 +71,17 @@ agy-auto-approve install
 
 See the [command reference](docs/commands.md) for upgrades and installation options.
 
+## Configuration
+
+```bash
+agy-auto-approve config                  # View global settings and their sources
+agy-auto-approve config --edit           # Edit global model and prompt settings
+agy-auto-approve daemon restart          # Apply to a fresh reviewer conversation
+```
+
+Settings are global, with environment variable overrides. See the
+[configuration reference](docs/commands.md#configuration) for model tiers and configuration precedence.
+
 ## Logs
 
 ```bash

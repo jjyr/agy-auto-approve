@@ -86,6 +86,74 @@ pub async fn start() -> Result<Value> {
         "Failed to start daemon within timeout; run `agy-auto-approve daemon run` for diagnostics"
     )
 }
+pub async fn stop() -> Result<()> {
+    let path = config::socket_path();
+    let response = request(&path, &json!({"action":"stop"}), 1).await?;
+    anyhow::ensure!(
+        response["status"] == "stopping",
+        "Unexpected stop response: {response}"
+    );
+    for _ in 0..100 {
+        if !path.exists() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    bail!("Daemon acknowledged stop but socket still exists");
+}
+
+pub async fn restart() -> Result<Value> {
+    let path = config::socket_path();
+    match UnixStream::connect(&path).await {
+        Ok(stream) => {
+            drop(stream);
+            stop().await?;
+        }
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) => {}
+        Err(e) => return Err(e).context("Cannot contact daemon for restart"),
+    }
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path.with_extension("sock.lock"))?;
+    // Socket removal precedes release of the daemon's lifetime lock.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match lock.try_lock_exclusive() {
+            Ok(()) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(e) => {
+                return Err(e)
+                    .context("Cannot reset reviewer session while another daemon owns the socket");
+            }
+        }
+    }
+    let session = config::state_dir().join("reviewer_session.json");
+    match fs::remove_file(&session) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(e)
+                .with_context(|| format!("Cannot remove cached session {}", session.display()));
+        }
+    }
+    drop(lock);
+    start().await
+}
+
 pub async fn review(payload: &Value) -> Result<Assessment> {
     review_traced(payload, &audit::request_id()).await
 }

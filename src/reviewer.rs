@@ -217,15 +217,14 @@ impl Bridge {
             );
             return Ok(cid.clone());
         }
-        let raw = Self::call(
-            &[
-                "new-conversation",
-                "--title=Guardian Approver Session",
-                &config::prompt(),
-            ],
-            id,
-        )
-        .await?;
+        let config = config::reviewer_config()?;
+        let model_arg = config.model.map(|model| format!("--model={model}"));
+        let mut args = vec!["new-conversation", "--title=Guardian Approver Session"];
+        if let Some(model) = &model_arg {
+            args.push(model);
+        }
+        args.push(&config.prompt);
+        let raw = Self::call(&args, id).await?;
         let v: Value = serde_json::from_str(&raw)?;
         let cid = v["conversationId"]
             .as_str()
