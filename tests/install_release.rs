@@ -80,11 +80,22 @@ esac
 "#,
         );
         fs::create_dir_all(dir.path().join("home/.local/bin")).unwrap();
-        fs::copy(
-            env!("CARGO_BIN_EXE_agy-auto-approve"),
-            dir.path().join("home/.local/bin/agy-auto-approve"),
-        )
-        .unwrap();
+        // Use Rust's close-on-exec file handles explicitly. Platform fs::copy
+        // implementations can briefly expose a writable descriptor to concurrent
+        // child spawns, causing Linux exec to fail with ETXTBSY (Text file busy).
+        {
+            let mut source = fs::File::open(env!("CARGO_BIN_EXE_agy-auto-approve")).unwrap();
+            let destination = dir.path().join("home/.local/bin/agy-auto-approve");
+            let mut target = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&destination)
+                .unwrap();
+            std::io::copy(&mut source, &mut target).unwrap();
+            target
+                .set_permissions(source.metadata().unwrap().permissions())
+                .unwrap();
+        }
         Self { dir, asset }
     }
     fn command(&self) -> Command {
