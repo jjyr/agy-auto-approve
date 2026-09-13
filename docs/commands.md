@@ -169,6 +169,8 @@ When a nonempty log directory is explicitly configured and no nonempty state dir
 
 ## Configuration
 
+See the [full configuration reference](configuration.md) for every plugin-managed configuration file, field descriptions, precedence, and examples.
+
 ```bash
 agy-auto-approve config         # Show global settings, sources, and runtime paths
 agy-auto-approve config --json  # Machine-readable settings (includes the full prompt)

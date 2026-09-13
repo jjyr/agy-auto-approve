@@ -81,7 +81,7 @@ agy-auto-approve daemon status --mode sidecar   # Inspect Desktop daemon
 ```
 
 Settings are global, with environment variable overrides. See the
-[configuration reference](docs/commands.md#configuration) for model tiers and configuration precedence.
+[configuration reference](docs/configuration.md) for model tiers and configuration precedence.
 
 ## Logs
 
