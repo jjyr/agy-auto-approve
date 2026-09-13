@@ -348,26 +348,38 @@ fn successful_update_stops_existing_daemon() {
     let root = f.installed().parent().unwrap().parent().unwrap().to_owned();
     fs::write(root.join(".crates2.json"), r#"{"installs":{"agy-auto-approve 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["agy-auto-approve"]}}}"#).unwrap();
     executable(&f.dir.path().join("bin/cargo"), "#!/bin/sh\nexit 0\n");
-    let mut daemon = Command::new(f.installed())
-        .args(["daemon", "run", "--idle-timeout", "5"])
-        .env("HOME", f.dir.path().join("home"))
-        .env("AGY_APPROVER_SOCKET", f.dir.path().join("approver.sock"))
-        .env("AGY_APPROVER_STATE_DIR", f.dir.path().join("state"))
-        .env("AGY_AUTO_APPROVE_LOG_DIR", f.dir.path().join("logs"))
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut daemons: Vec<_> = ["cli", "sidecar"]
+        .into_iter()
+        .map(|mode| {
+            Command::new(f.installed())
+                .args(["daemon", "run", "--mode", mode, "--idle-timeout", "30"])
+                .env("HOME", f.dir.path().join("home"))
+                .env("AGY_APPROVER_SOCKET", f.dir.path().join("approver.sock"))
+                .env("AGY_APPROVER_STATE_DIR", f.dir.path().join("state"))
+                .env("AGY_AUTO_APPROVE_LOG_DIR", f.dir.path().join("logs"))
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
     for _ in 0..100 {
-        if f.dir.path().join("approver.sock").exists() {
+        if ["cli", "sidecar"]
+            .iter()
+            .all(|mode| f.dir.path().join(format!("approver-{mode}.sock")).exists())
+        {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     let out = f.run(f.command(), &[]);
-    let stopped = !f.dir.path().join("approver.sock").exists();
-    let _ = daemon.kill();
-    let _ = daemon.wait();
+    let stopped = ["cli", "sidecar"]
+        .iter()
+        .all(|mode| !f.dir.path().join(format!("approver-{mode}.sock")).exists());
+    for daemon in &mut daemons {
+        let _ = daemon.kill();
+        let _ = daemon.wait();
+    }
     assert!(
         out.status.success(),
         "{}",

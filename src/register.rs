@@ -68,7 +68,7 @@ pub fn register(cli_only: bool, desktop_only: bool) -> Result<()> {
             "sidecars/agy-auto-approve/approver/sidecar.json",
         ] {
             update(&base.join(relative), |v| {
-                *v = json!({"name":"approver","description":"Antigravity auto-approve daemon sidecar","command":executable,"args":["daemon","run"]});
+                *v = json!({"name":"approver","description":"Antigravity auto-approve daemon sidecar","command":executable,"args":["daemon","run","--mode","sidecar"]});
                 Ok(())
             })?;
         }

@@ -1,6 +1,6 @@
 # agy-auto-approve
 
-Automatic approval hooks and a persistent approval daemon for Antigravity CLI and Desktop, built as a single Rust executable. AI reviews use the host's `agentapi` command and require an active login.
+Automatic approval hooks and a persistent approval daemon for Antigravity CLI and Desktop, built as a single Rust executable. AI reviews use `agy` in CLI mode and the host's `agentapi` in Desktop sidecar mode, with independent daemons and sessions. Both require an active login.
 
 Reviewer subprocesses preserve the host's `PATH` and append
 `$HOME/.gemini/antigravity-cli/bin` as a fallback for CLI launches. Host-injected
@@ -25,12 +25,12 @@ Antigravity CLI / Desktop
            | no
      Persistent daemon
            |
-     agentapi AI reviewer -------------> Allow / Deny
+     agy / agentapi reviewer -------------> Allow / Deny
            |
      Error or timeout -----------------> Deny
 ```
 
-The daemon reuses a reviewer session across requests, allowing the model service
+Each daemon reuses a separate reviewer session for each user conversation, allowing the model service
 to reuse KV/prompt caches for shared context. Cache hits can reduce repeated
 processing and input-token costs, depending on the provider's caching and pricing.
 Repeated AI-review denials trip the circuit breaker, requiring user review on
@@ -76,7 +76,8 @@ See the [command reference](docs/commands.md) for upgrades and installation opti
 ```bash
 agy-auto-approve config                  # View global settings and their sources
 agy-auto-approve config --edit           # Edit global model and prompt settings
-agy-auto-approve daemon restart          # Apply to a fresh reviewer conversation
+agy-auto-approve daemon restart --mode cli      # Apply CLI settings
+agy-auto-approve daemon status --mode sidecar   # Inspect Desktop daemon
 ```
 
 Settings are global, with environment variable overrides. See the

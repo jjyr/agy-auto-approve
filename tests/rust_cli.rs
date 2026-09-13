@@ -19,15 +19,16 @@ impl Sandbox {
             .prefix("agy-rs-")
             .tempdir_in("/tmp")
             .unwrap();
-        let socket = dir.path().join("a.sock");
+        let socket = dir.path().join("a-sidecar.sock");
         Self { dir, socket }
     }
     fn command(&self) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_agy-auto-approve"));
-        c.env("HOME", self.dir.path())
+        c.args(["--mode", "sidecar"])
+            .env("HOME", self.dir.path())
             .env_remove("AGY_AUTO_APPROVE_MODEL")
             .env_remove("AGY_AUTO_APPROVE_PROMPT")
-            .env("AGY_APPROVER_SOCKET", &self.socket)
+            .env("AGY_APPROVER_SOCKET", self.dir.path().join("a.sock"))
             .env("AGY_APPROVER_STATE_DIR", self.dir.path().join("state"))
             .env("AGY_AUTO_APPROVE_LOG_DIR", self.dir.path().join("logs"))
             .env("AGY_AUTO_APPROVE_SILENT", "1")
@@ -139,6 +140,23 @@ esac
 }
 
 #[test]
+fn agentapi_failure_includes_stdout_and_stderr() {
+    for stderr in ["", "transport failed"] {
+        let s = Sandbox::new();
+        s.mock(&format!(
+            "echo '{{\"error\":\"ANTIGRAVITY_LS_ADDRESS is not set\"}}'\necho '{stderr}' >&2\nexit 1"
+        ));
+        let output = s.hook(&payload("git status"));
+        assert_eq!(output["decision"], "deny");
+        let reason = output["reason"].as_str().unwrap();
+        assert!(reason.contains("ANTIGRAVITY_LS_ADDRESS is not set"));
+        assert!(reason.contains(stderr));
+        let records: Value = serde_json::from_slice(&s.run(&["logs", "--json"]).stdout).unwrap();
+        assert_eq!(records[0]["stage"], "reviewer_error");
+    }
+}
+
+#[test]
 fn missing_agentapi_logs_search_context_and_infrastructure_failure() {
     let s = Sandbox::new();
     let output = s.hook(&payload("git status"));
@@ -197,9 +215,14 @@ case "$1" in
   send-message) echo send >> "$HOME/calls"; if [ "$2" = expired ]; then exit 1; fi; printf '%s\n' '{"response":"```json\n{\"outcome\":\"allow\"}\n```"}';;
 esac
 "#);
-    fs::create_dir_all(s.dir.path().join("state")).unwrap();
+    fs::create_dir_all(agy_auto_approve::sessions::directory(
+        &s.dir.path().join("state/sidecar"),
+        "test",
+    ))
+    .unwrap();
     fs::write(
-        s.dir.path().join("state/reviewer_session.json"),
+        agy_auto_approve::sessions::directory(&s.dir.path().join("state/sidecar"), "test")
+            .join("reviewer_session.json"),
         r#"{"conversationId":"expired"}"#,
     )
     .unwrap();
@@ -724,9 +747,9 @@ esac
 "#,
     );
     let mut children = Vec::new();
-    for i in 0..10 {
+    for _ in 0..10 {
         let mut v: Value = serde_json::from_str(&payload("cargo test")).unwrap();
-        v["conversationId"] = format!("concurrent-{i}").into();
+        v["conversationId"] = "test".into();
         let mut child = s
             .command()
             .arg("hook")
@@ -778,7 +801,10 @@ fn registration_modes_preserve_existing_permissions() {
                 .unwrap(),
             )
             .unwrap();
-            assert_eq!(manifest["args"], json!(["daemon", "run"]));
+            assert_eq!(
+                manifest["args"],
+                json!(["daemon", "run", "--mode", "sidecar"])
+            );
         } else {
             assert!(
                 actual["permissions"]["allow"]
@@ -861,14 +887,23 @@ esac
 "#,
     );
     // Restart also starts a stopped daemon and removes a persisted session.
-    fs::create_dir_all(s.dir.path().join("state")).unwrap();
+    fs::create_dir_all(agy_auto_approve::sessions::directory(
+        &s.dir.path().join("state/sidecar"),
+        "test",
+    ))
+    .unwrap();
     fs::write(
-        s.dir.path().join("state/reviewer_session.json"),
+        agy_auto_approve::sessions::directory(&s.dir.path().join("state/sidecar"), "test")
+            .join("reviewer_session.json"),
         r#"{"conversationId":"old"}"#,
     )
     .unwrap();
     assert!(s.run(&["daemon", "restart"]).status.success());
-    assert!(!s.dir.path().join("state/reviewer_session.json").exists());
+    assert!(
+        !agy_auto_approve::sessions::directory(&s.dir.path().join("state/sidecar"), "test")
+            .join("reviewer_session.json")
+            .exists()
+    );
     assert_eq!(s.hook(&payload("cargo test"))["decision"], "allow");
     let before = fs::read_to_string(s.dir.path().join("created")).unwrap();
     assert!(!before.contains("--model="));

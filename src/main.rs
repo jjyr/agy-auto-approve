@@ -7,6 +7,9 @@ use std::io::Read;
 #[derive(Parser)]
 #[command(version, about = "Antigravity approval hook and daemon management")]
 struct Cli {
+    /// Backend mode. Hooks auto-detect the host; other commands default to cli.
+    #[arg(long, global = true, value_enum)]
+    mode: Option<config::Mode>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -78,7 +81,15 @@ enum LogsCommand {
 }
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    config::set_mode(cli.mode.unwrap_or_else(|| {
+        if matches!(cli.command, Commands::Hook) {
+            config::Mode::for_hook()
+        } else {
+            config::Mode::Cli
+        }
+    }));
+    match cli.command {
         Commands::Hook => {
             let mut bytes = Vec::new();
             let parsed = std::io::stdin()
@@ -164,7 +175,7 @@ async fn main() -> Result<()> {
                     _ => {
                         println!(
                             "{}",
-                            json!({"status":"stopped","socket":config::socket_path()})
+                            json!({"status":"stopped","mode":config::mode(),"socket":config::socket_path()})
                         );
                         std::process::exit(1);
                     }
@@ -172,7 +183,7 @@ async fn main() -> Result<()> {
             }
             DaemonCommand::Stop => {
                 daemon::stop().await?;
-                println!("{}", json!({"status":"stopped"}));
+                println!("{}", json!({"status":"stopped", "mode":config::mode()}));
             }
             DaemonCommand::Restart => println!("{}", daemon::restart().await?),
         },
