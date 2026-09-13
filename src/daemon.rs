@@ -1,7 +1,4 @@
-use crate::{
-    audit, config,
-    reviewer::{Assessment, Bridge},
-};
+use crate::{audit, config, reviewer::Assessment, sessions::SessionPool};
 use anyhow::{Context, Result, bail};
 use fs2::FileExt;
 use serde_json::{Value, json};
@@ -59,12 +56,13 @@ pub async fn start() -> Result<Value> {
     let path = config::socket_path();
     if let Ok(v) = request(&path, &json!({"action":"ping"}), 1).await
         && v["status"] == "pong"
+        && v["mode"] == json!(config::mode())
     {
         return Ok(v);
     }
     let mut command = Command::new(std::env::current_exe()?);
     command
-        .args(["daemon", "run"])
+        .args(["daemon", "run", "--mode", config::mode().as_str()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -74,6 +72,7 @@ pub async fn start() -> Result<Value> {
     while Instant::now() < until {
         if let Ok(v) = request(&path, &json!({"action":"ping"}), 1).await
             && v["status"] == "pong"
+            && v["mode"] == json!(config::mode())
         {
             return Ok(v);
         }
@@ -141,8 +140,8 @@ pub async fn restart() -> Result<Value> {
             }
         }
     }
-    let session = config::state_dir().join("reviewer_session.json");
-    match fs::remove_file(&session) {
+    let session = config::state_dir().join("sessions");
+    match fs::remove_dir_all(&session) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
@@ -159,7 +158,7 @@ pub async fn review(payload: &Value) -> Result<Assessment> {
 }
 pub async fn review_traced(payload: &Value, id: &str) -> Result<Assessment> {
     start().await?;
-    let req = json!({"action":"evaluate", "request_id":id, "toolCall":payload["toolCall"], "workspacePaths":payload["workspacePaths"]});
+    let req = json!({"action":"evaluate", "mode":config::mode(), "request_id":id, "user_session_id":crate::sessions::user_session_id(payload), "toolCall":payload["toolCall"], "workspacePaths":payload["workspacePaths"]});
     let v = request(&config::socket_path(), &req, 25).await?;
     let a: Assessment =
         serde_json::from_value(v["assessment"].clone()).context("Invalid daemon assessment")?;
@@ -169,7 +168,7 @@ pub async fn review_traced(payload: &Value, id: &str) -> Result<Assessment> {
     Ok(a)
 }
 struct State {
-    bridge: Mutex<Bridge>,
+    sessions: SessionPool,
     stop: Notify,
     started: Instant,
     last_active: Mutex<Instant>,
@@ -185,16 +184,23 @@ async fn handle(stream: UnixStream, state: Arc<State>) {
         *state.last_active.lock().await = Instant::now();
         match req["action"].as_str().unwrap_or("") {
             "ping" | "status" => Ok(json!({"status": if req["action"] == "ping" {"pong"} else {"running"},
-                "pid":std::process::id(), "socket":config::socket_path(), "version":env!("CARGO_PKG_VERSION"),
+                "mode":config::mode(), "pid":std::process::id(), "socket":config::socket_path(), "version":env!("CARGO_PKG_VERSION"),
                 "uptime_seconds":state.started.elapsed().as_secs(), "idle_timeout_seconds":state.idle_timeout,
-                "evaluations":state.requests.load(Ordering::Relaxed), "active_evaluations":state.active.load(Ordering::Relaxed)})),
+                "cached_sessions":state.sessions.len(), "evaluations":state.requests.load(Ordering::Relaxed), "active_evaluations":state.active.load(Ordering::Relaxed)})),
             "stop" => Ok(json!({"status":"stopping"})),
             "evaluate" => {
+                anyhow::ensure!(req["mode"] == json!(config::mode()), "Review mode does not match daemon mode");
                 state.requests.fetch_add(1, Ordering::Relaxed);
                 state.active.fetch_add(1, Ordering::Relaxed);
                 let evaluation = tokio::time::timeout(Duration::from_secs(24), async {
-                    state.bridge.lock().await.evaluate(&req).await
-                }).await.unwrap_or_else(|_| Assessment::deny("Review deadline exceeded"));
+                    let session = state.sessions.acquire(req["user_session_id"].as_str().filter(|id| !id.trim().is_empty()))?;
+                    Ok::<_, anyhow::Error>(session.evaluate(&req).await)
+                }).await;
+                let evaluation = match evaluation {
+                    Ok(Ok(assessment)) => assessment,
+                    Ok(Err(e)) => Assessment::deny(format!("Cannot acquire reviewer session: {e:#}")),
+                    Err(_) => Assessment::deny("Review deadline exceeded"),
+                };
                 if let Some(id) = req["request_id"].as_str() {
                     audit::record(id, "daemon_result", json!({"assessment":evaluation}));
                 }
@@ -250,7 +256,7 @@ pub async fn run(idle_timeout: u64) -> Result<()> {
     let _cleanup = SocketCleanup(path.clone());
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
     let state = Arc::new(State {
-        bridge: Mutex::new(Bridge::default()),
+        sessions: SessionPool::new(config::mode(), config::state_dir()),
         stop: Notify::new(),
         started: Instant::now(),
         last_active: Mutex::new(Instant::now()),
@@ -270,6 +276,7 @@ pub async fn run(idle_timeout: u64) -> Result<()> {
             _ = tokio::signal::ctrl_c() => break,
             _ = clients.join_next(), if !clients.is_empty() => {},
             _ = tick.tick() => {
+                state.sessions.prune(Duration::from_secs(300));
                 if idle_timeout > 0 && state.active.load(Ordering::Relaxed) == 0 && state.last_active.lock().await.elapsed().as_secs() >= idle_timeout { break; }
             }
         }

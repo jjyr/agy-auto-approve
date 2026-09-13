@@ -267,13 +267,19 @@ pub async fn update(version: Option<&str>) -> Result<()> {
     } else {
         println!("No enabled plugin found. Run `agy-auto-approve install` to enable it.");
     }
-    if let Ok(status) =
-        daemon::request(&config::socket_path(), &json!({"action":"status"}), 1).await
-        && status["status"] == "running"
-    {
-        run(Command::new(&executable).args(["daemon", "stop"]))
-            .context("Upgrade completed, but the old daemon could not be stopped")?;
-        println!("CLI will start the new daemon on its next review request.");
+    for mode in [config::Mode::Cli, config::Mode::Sidecar] {
+        if let Ok(status) = daemon::request(
+            &config::socket_path_for(mode),
+            &json!({"action":"status"}),
+            1,
+        )
+        .await
+            && status["status"] == "running"
+        {
+            run(Command::new(&executable).args(["daemon", "stop", "--mode", mode.as_str()]))
+                .context("Upgrade completed, but the old daemon could not be stopped")?;
+            println!("CLI will start the new daemon on its next review request.");
+        }
     }
     if desktop {
         println!("Restart Antigravity Desktop to load the updated sidecar.");

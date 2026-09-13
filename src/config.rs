@@ -1,5 +1,36 @@
 use std::{env, fs, path::PathBuf};
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    #[default]
+    Cli,
+    Sidecar,
+}
+impl Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::Sidecar => "sidecar",
+        }
+    }
+    pub fn for_hook() -> Self {
+        if env::var_os("ANTIGRAVITY_LS_ADDRESS").is_some_and(|v| !v.is_empty()) {
+            Self::Sidecar
+        } else {
+            Self::Cli
+        }
+    }
+}
+// Selected once at the process boundary; never mutate the daemon environment.
+static MODE: std::sync::OnceLock<Mode> = std::sync::OnceLock::new();
+pub fn set_mode(mode: Mode) {
+    MODE.set(mode).expect("mode already selected");
+}
+pub fn mode() -> Mode {
+    *MODE.get_or_init(Mode::default)
+}
+
 pub fn home() -> PathBuf {
     env::var_os("HOME")
         .map(PathBuf::from)
@@ -7,7 +38,7 @@ pub fn home() -> PathBuf {
 }
 /// Preserve the host-injected PATH and append the CLI shim directory as a fallback.
 /// Only applied to reviewer child processes, never to the daemon's global environment.
-pub fn agentapi_path() -> anyhow::Result<std::ffi::OsString> {
+pub fn backend_path() -> anyhow::Result<std::ffi::OsString> {
     let mut paths: Vec<PathBuf> = env::var_os("PATH")
         .map(|path| env::split_paths(&path).collect())
         .unwrap_or_default();
@@ -23,6 +54,9 @@ pub fn log_dir() -> PathBuf {
         .unwrap_or_else(|| home().join(".gemini/agy-auto-approve"))
 }
 pub fn state_dir() -> PathBuf {
+    state_dir_for(mode())
+}
+pub fn state_dir_for(mode: Mode) -> PathBuf {
     env::var_os("AGY_APPROVER_STATE_DIR")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
@@ -33,11 +67,17 @@ pub fn state_dir() -> PathBuf {
                 home().join(".gemini/antigravity-cli/state")
             }
         })
+        .join(mode.as_str())
 }
 pub fn socket_path() -> PathBuf {
-    env::var_os("AGY_APPROVER_SOCKET")
+    socket_path_for(mode())
+}
+pub fn socket_path_for(mode: Mode) -> PathBuf {
+    let base = env::var_os("AGY_APPROVER_SOCKET")
         .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(".gemini/antigravity-cli/approver.sock"))
+        .unwrap_or_else(|| home().join(".gemini/antigravity-cli/approver.sock"));
+    let stem = base.file_stem().unwrap_or_default().to_string_lossy();
+    base.with_file_name(format!("{stem}-{}.sock", mode.as_str()))
 }
 pub fn config_path() -> PathBuf {
     home().join(".gemini/config/agy-auto-approve.toml")
@@ -50,12 +90,16 @@ struct FileConfig {
     model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cli_model: Option<String>,
 }
 
 #[derive(serde::Serialize)]
 pub struct ReviewerConfig {
     pub model: Option<String>,
     pub prompt: String,
+    pub cli_model: Option<String>,
+    pub cli_model_source: String,
     pub model_source: String,
     pub prompt_source: String,
 }
@@ -101,7 +145,10 @@ pub fn reviewer_config() -> anyhow::Result<ReviewerConfig> {
         "Invalid model {model:?} from {model_source}; expected flash_lite, flash, pro, or an empty string for the host default"
     );
     let (prompt, prompt_source) = resolve("prompt", file.prompt, include_str!("prompt.txt"))?;
+    let (cli_model, cli_model_source) = resolve("cli_model", file.cli_model, "")?;
     Ok(ReviewerConfig {
+        cli_model: (!cli_model.trim().is_empty()).then(|| cli_model.trim().to_owned()),
+        cli_model_source,
         model: if model.is_empty() {
             None
         } else {
@@ -119,7 +166,7 @@ pub fn show(json: bool) -> anyhow::Result<()> {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "file": config_path(), "reviewer": config,
+                "file": config_path(), "reviewer": config, "mode": mode(),
                 "socket": socket_path(), "state_dir": state_dir(), "log_dir": log_dir()
             }))?
         );
@@ -130,6 +177,12 @@ pub fn show(json: bool) -> anyhow::Result<()> {
             config.model.as_deref().unwrap_or("host default"),
             config.model_source
         );
+        println!(
+            "CLI model: {} ({})",
+            config.cli_model.as_deref().unwrap_or("host default"),
+            config.cli_model_source
+        );
+        println!("Mode: {}", mode().as_str());
         println!("Prompt ({}):\n{}", config.prompt_source, config.prompt);
         println!(
             "Socket: {}\nState: {}\nLogs: {}",
@@ -154,6 +207,7 @@ pub fn edit() -> anyhow::Result<()> {
     if !path.exists() {
         let template = FileConfig {
             model: Some(String::new()),
+            cli_model: Some(String::new()),
             prompt: Some(include_str!("prompt.txt").into()),
         };
         let mut file = fs::OpenOptions::new()
@@ -163,7 +217,7 @@ pub fn edit() -> anyhow::Result<()> {
             .open(&path)?;
         writeln!(
             file,
-            "# Global reviewer settings. model: flash_lite, flash, pro, or empty for host default.\n# Environment variables override this file. Apply with: agy-auto-approve daemon restart\n{}",
+            "# Global reviewer settings. model: sidecar tier; cli_model: agy model ID. Empty uses host default.\n# Environment variables override this file. Apply with: agy-auto-approve daemon restart\n{}",
             toml::to_string_pretty(&template)?
         )?;
     }

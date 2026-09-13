@@ -3,6 +3,7 @@ use anyhow::Result;
 use fs2::FileExt;
 use regex::Regex;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     fs::{self, OpenOptions},
     io::Write,
@@ -46,6 +47,11 @@ pub fn read_only(tool: &str) -> bool {
             | "read_browser_page"
     )
 }
+fn lock_busy(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|e| e.kind() == std::io::ErrorKind::WouldBlock)
+}
 pub struct Breaker {
     path: PathBuf,
     _lock: fs::File,
@@ -53,17 +59,29 @@ pub struct Breaker {
 }
 impl Breaker {
     pub fn open(dir: &Path, cid: &str) -> Result<Self> {
-        fs::create_dir_all(dir)?;
-        let cid: String = cid
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                    c
-                } else {
-                    '_'
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            match Self::try_open(dir, cid) {
+                Err(e) if lock_busy(&e) && std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10))
                 }
-            })
-            .collect();
+                result => return result,
+            }
+        }
+    }
+    async fn open_for_review(dir: &Path, cid: &str) -> Result<Self> {
+        loop {
+            match Self::try_open(dir, cid) {
+                Err(e) if lock_busy(&e) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await
+                }
+                result => return result,
+            }
+        }
+    }
+    fn try_open(dir: &Path, cid: &str) -> Result<Self> {
+        fs::create_dir_all(dir)?;
+        let cid = format!("{:x}", Sha256::digest(cid.as_bytes()));
         let path = dir.join(format!("cb_{cid}.json"));
         let lock = OpenOptions::new()
             .create(true)
@@ -71,19 +89,7 @@ impl Breaker {
             .read(true)
             .write(true)
             .open(path.with_extension("lock"))?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-        loop {
-            match lock.try_lock_exclusive() {
-                Ok(()) => break,
-                Err(e)
-                    if e.kind() == std::io::ErrorKind::WouldBlock
-                        && std::time::Instant::now() < deadline =>
-                {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Err(e) => return Err(e.into()),
-            }
-        }
+        lock.try_lock_exclusive()?;
         let state = fs::read(&path)
             .ok()
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
@@ -154,9 +160,10 @@ pub fn result(decision: &str, reason: &str, tool: &str, grants: Option<Vec<Strin
     {
         let _ = writeln!(
             f,
-            "[{}] [{:<5}] tool={} | reason={}",
+            "[{}] [{:<5}] mode={} tool={} | reason={}",
             chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
             decision.to_uppercase(),
+            config::mode().as_str(),
             tool,
             reason
         );
@@ -186,7 +193,24 @@ pub async fn evaluate(payload: &Value) -> Value {
     let started = std::time::Instant::now();
     audit::record(&id, "hook_input", json!({"input":payload}));
     let mut stage = "reviewer";
-    let output = evaluate_inner(payload, &id, &mut stage).await;
+    // Includes waiting for this user's circuit breaker lock and daemon startup/review.
+    let output = match tokio::time::timeout(
+        std::time::Duration::from_secs(28),
+        evaluate_inner(payload, &id, &mut stage),
+    )
+    .await
+    {
+        Ok(output) => output,
+        Err(_) => {
+            stage = "reviewer_error";
+            result(
+                "deny",
+                "Fail-closed: Approval deadline exceeded",
+                payload["toolCall"]["name"].as_str().unwrap_or(""),
+                None,
+            )
+        }
+    };
     audit::record(
         &id,
         "hook_result",
@@ -200,15 +224,19 @@ pub async fn evaluate(payload: &Value) -> Value {
     output
 }
 fn conversation_id(payload: &Value) -> &str {
-    payload["conversationId"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .or(payload["conversation_id"].as_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("default")
+    crate::sessions::user_session_id(payload).unwrap_or("default")
 }
 async fn evaluate_inner(payload: &Value, id: &str, stage: &mut &'static str) -> Value {
     let tool = payload["toolCall"]["name"].as_str().unwrap_or("");
+    if std::env::var_os("AGY_AUTO_APPROVE_REVIEWER").is_some() {
+        *stage = "reviewer_recursion";
+        return result(
+            "deny",
+            "Approval reviewers may not invoke tools.",
+            tool,
+            None,
+        );
+    }
     let args = &payload["toolCall"]["args"];
     if read_only(tool) {
         *stage = "whitelist";
@@ -225,13 +253,13 @@ async fn evaluate_inner(payload: &Value, id: &str, stage: &mut &'static str) -> 
         *stage = "blacklist";
         return result("deny", &reason, tool, None);
     }
-    let cid = payload["conversationId"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .or(payload["conversation_id"].as_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("default");
-    let mut breaker = match Breaker::open(&config::state_dir(), cid) {
+    let breaker_result = match crate::sessions::user_session_id(payload) {
+        Some(cid) => Breaker::open_for_review(&config::state_dir(), cid)
+            .await
+            .map(Some),
+        None => Ok(None),
+    };
+    let mut breaker = match breaker_result {
         Ok(b) => b,
         Err(e) => {
             *stage = "state_error";
@@ -243,7 +271,7 @@ async fn evaluate_inner(payload: &Value, id: &str, stage: &mut &'static str) -> 
             );
         }
     };
-    if let Some(reason) = breaker.tripped() {
+    if let Some(reason) = breaker.as_ref().and_then(Breaker::tripped) {
         *stage = "circuit_breaker";
         return result("force_ask", &reason, tool, None);
     }
@@ -251,14 +279,18 @@ async fn evaluate_inner(payload: &Value, id: &str, stage: &mut &'static str) -> 
         Ok(a) => a,
         Err(e) => {
             *stage = "reviewer_error";
-            Assessment::deny(format!("Approver daemon/agentapi is unavailable: {e}"))
+            Assessment::deny(format!("Approver daemon/backend is unavailable: {e}"))
         }
     };
     audit::record(id, "assessment", json!({"assessment":assessment}));
     if assessment.error_stage.is_some() {
         *stage = "reviewer_error";
     }
-    if let Err(e) = breaker.record(&assessment.outcome) {
+    if let Err(e) = breaker
+        .as_mut()
+        .map(|b| b.record(&assessment.outcome))
+        .transpose()
+    {
         *stage = "state_error";
         return result(
             "deny",
@@ -269,4 +301,32 @@ async fn evaluate_inner(payload: &Value, id: &str, stage: &mut &'static str) -> 
     }
     let grants = (assessment.outcome == "allow").then(|| parser::overrides(tool, args));
     result(&assessment.outcome, &assessment.rationale, tool, grants)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn cancelled_breaker_wait_does_not_retain_the_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let mut owner = Breaker::open(root.path(), "user").unwrap();
+        owner.record("deny").unwrap();
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(5),
+                Breaker::open_for_review(root.path(), "user")
+            )
+            .await
+            .is_err()
+        );
+        drop(owner);
+        let restored = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            Breaker::open_for_review(root.path(), "user"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(restored.state["consecutive_denials"], 1);
+    }
 }

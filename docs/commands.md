@@ -1,7 +1,7 @@
 # Command reference
 
 Complete command and option reference for `agy-auto-approve` and its installation commands.
-AI reviews require the host's `agentapi` command and an active login.
+AI reviews require `agy` (CLI mode) or the host's `agentapi` (sidecar mode), and an active login.
 
 ## Installation
 
@@ -33,7 +33,7 @@ recognized; disabled or missing integrations remain unchanged. If neither is
 enabled, run `install` to enable the plugin. Configuration refresh failures are
 reported separately from the completed binary upgrade.
 
-A running daemon is stopped after the upgrade; the CLI starts the new version
+Both mode daemons are stopped after the upgrade; the CLI starts the new version
 on its next AI review request. Restart Antigravity Desktop when its sidecar is
 enabled. A failed daemon stop is reported and may require a manual restart.
 
@@ -80,17 +80,19 @@ agy-auto-approve daemon run --idle-timeout 0   # Disable idle shutdown
 `start` returns the existing daemon's status if it is already running. CLI hooks automatically start the daemon when an AI review is needed.
 
 `restart` stops the daemon, waits for its lifetime lock to be released, removes the
-local cached reviewer conversation ID, and starts the daemon. If already stopped,
-it clears the cache and starts it. The next approval creates a new conversation
+selected mode’s entire `sessions/` directory (reviewer IDs and workspaces), and starts the daemon. If already stopped,
+it clears those sessions and starts it. The next approval creates a new conversation
 using the latest configuration; remote conversations are not deleted. Ordinary
-`stop` / `start` retains the cached conversation. Restart interrupts active reviews.
+`stop` / `start` retains each user’s cached conversation. Restart interrupts active reviews.
 For Desktop sidecars, restart the host if it needs to reattach to the daemon.
 
-`status` does not start the daemon. It reports the PID, version, socket, uptime, and approval counts when running; it exits with code 1 when stopped. `start`, `status`, and `stop` write JSON to stdout and diagnostics to stderr.
+`status` does not start the daemon. It reports the PID, version, socket, uptime, cached session count, and approval counts when running; it exits with code 1 when stopped. `start`, `status`, and `stop` write JSON to stdout and diagnostics to stderr.
 
 `run` is intended for foreground use or service managers. Its `--idle-timeout SECONDS` option defaults to `1800` (30 minutes); `0` disables idle shutdown.
 
-The default socket is `~/.gemini/antigravity-cli/approver.sock`.
+All daemon commands accept `--mode cli|sidecar`, defaulting to `cli`. Each mode has its own daemon, lock, session, and circuit breakers. Default sockets are `~/.gemini/antigravity-cli/approver-cli.sock` and `approver-sidecar.sock`. Status includes `mode`. Desktop registration explicitly selects sidecar mode.
+
+`hook --mode cli|sidecar` overrides routing. Without it, a nonempty `ANTIGRAVITY_LS_ADDRESS` selects sidecar; otherwise CLI. See [sidecars](sidecars.md) for migration and backend details.
 
 ## Approval logs
 
@@ -119,7 +121,7 @@ List options can be combined. Normal lists show newest records first. Follow mod
 
 `logs show APPROVAL_ID` outputs all recorded events for an exact approval ID as JSON, including hook input, reviewer input/output, and the final decision. It cannot be combined with list options. Incomplete approvals may have events available through `show` even though they do not appear in summaries.
 
-Logs are read directly from `~/.gemini/agy-auto-approve/approvals.jsonl`; the daemon does not need to be running. These records contain approval-service and `agentapi` output, not the subsequent tool execution's stdout/stderr. Logs are not automatically rotated or cleaned up.
+Logs are read directly from `~/.gemini/agy-auto-approve/approvals.jsonl`; the daemon does not need to be running. These records include `mode` and contain approval-service and backend output, not the subsequent tool execution's stdout/stderr. Logs are not automatically rotated or cleaned up.
 
 New approval summaries include the command and working directory when supplied in
 `CommandLine` and `Cwd`, and display the pipeline stage. `reviewer_error` indicates
@@ -127,7 +129,7 @@ an approval infrastructure or response-format failure, whereas `reviewer` indica
 a parsed reviewer decision. Older records may lack the command and directory;
 `logs show ID` still exposes their original hook input.
 
-Detailed `agentapi_request` events include the daemon PID, operation, effective
+Detailed `agentapi_request` and `agy_request` events include the daemon PID, operation, effective
 search PATH, and CLI fallback directory. Process errors include the operation and
 failure stage; session persistence errors identify the affected path. Logs do not
 dump the full process environment.
@@ -146,22 +148,28 @@ The host normally invokes this command automatically. It reads a PreToolUse JSON
 printf '%s\n' '{"toolCall":{"name":"view_file","args":{}},"workspacePaths":[]}' | agy-auto-approve hook
 ```
 
+Pass `conversationId` (or `conversation_id`) to reuse an isolated reviewer session for that user conversation. Missing or blank IDs use temporary, nonpersistent review sessions. Same-user requests serialize; different users can be reviewed concurrently. The hook deadline is 28 seconds including queue waiting.
+
 The payload must contain `toolCall.name` as a string and `toolCall.args` as an object. Input is limited to 1 MiB. Invalid input produces an `ask` result. Approval decisions are `allow`, `deny`, `ask`, or `force_ask`.
 
 ## Environment variables
 
 | Variable | Purpose / default |
 | --- | --- |
-| `AGY_APPROVER_SOCKET` | Daemon socket; `~/.gemini/antigravity-cli/approver.sock`. |
-| `AGY_APPROVER_STATE_DIR` | State directory; `~/.gemini/antigravity-cli/state`. |
+| `AGY_APPROVER_SOCKET` | Socket base; `~/.gemini/antigravity-cli/approver.sock`. Inserts `-cli` / `-sidecar` before `.sock`. |
+| `AGY_APPROVER_STATE_DIR` | State base; `~/.gemini/antigravity-cli/state`. Appends `cli/` / `sidecar/`. |
 | `AGY_AUTO_APPROVE_LOG_DIR` | Log directory; `~/.gemini/agy-auto-approve`. |
 | `AGY_AUTO_APPROVE_SILENT` | Set to `1` to suppress approval notices on stderr; structured logs remain enabled. |
 | `AGY_AUTO_APPROVE_PROMPT` | Override the reviewer prompt. |
-| `AGY_AUTO_APPROVE_MODEL` | Override the model tier: `flash_lite`, `flash`, or `pro`. |
+| `AGY_AUTO_APPROVE_MODEL` | Override the sidecar model tier: `flash_lite`, `flash`, or `pro`. |
+| `AGY_AUTO_APPROVE_CLI_MODEL` | Override the agy model ID; empty uses the host default. |
+| `AGY_AUTO_APPROVE_REVIEWER` | Internal child-process marker: hooks deny all nested reviewer tool calls. |
 
-When a nonempty log directory is explicitly configured and no nonempty state directory is set, state is stored in the log directory's `state/` subdirectory.
+When a nonempty log directory is explicitly configured and no nonempty state directory is set, state is stored in the log directory's `state/cli/` or `state/sidecar/` subdirectory.
 
 ## Configuration
+
+See the [full configuration reference](configuration.md) for every plugin-managed configuration file, field descriptions, precedence, and examples.
 
 ```bash
 agy-auto-approve config         # Show global settings, sources, and runtime paths
@@ -175,6 +183,8 @@ The global file is `~/.gemini/config/agy-auto-approve.toml`:
 ```toml
 # Empty means the host's default model; otherwise flash_lite, flash, or pro.
 model = ""
+# CLI model ID from `agy models`; empty uses its default.
+cli_model = ""
 prompt = """Your reviewer instructions here."""
 ```
 
@@ -184,21 +194,21 @@ back to `vi`. Editor arguments are supported (for example `EDITOR='code --wait'`
 use a blocking editor so validation runs after saving. Invalid TOML, unknown keys,
 and unsupported model values produce an error. Editing does not restart the daemon.
 
-Precedence per setting: nonempty `AGY_AUTO_APPROVE_PROMPT` / `AGY_AUTO_APPROVE_MODEL`,
+Precedence per setting: nonempty `AGY_AUTO_APPROVE_PROMPT` / `AGY_AUTO_APPROVE_MODEL` / `AGY_AUTO_APPROVE_CLI_MODEL`,
 then the TOML field, then built-in defaults. An empty TOML model explicitly
 selects the host default. An empty prompt is used literally.
 Old global `~/.gemini/config/agy-auto-approve-*.txt` files and project
 `.agents/agy-auto-approve-*.txt` files are not read or migrated. `--local`
 is unsupported. `effort` and `AGY_AUTO_APPROVE_EFFORT` are no longer supported:
 `agentapi` does not expose an effort option. Old full model identifiers such as
-`gemini-3.7-flash` must be replaced with a supported tier.
+`gemini-3.7-flash` must be replaced with a supported tier for `model`; use `cli_model` for CLI model IDs.
 
 Model tiers are passed as `agentapi new-conversation --model=<tier>` (supported
 by agy 1.2.2). No model flag is passed when using the host default.
 Settings are read when a reviewer conversation is created. Existing conversations
 keep their configuration, including across ordinary daemon stops and starts.
-There is no change detection or hot reload; use `daemon restart` to forget the
-cached conversation. Environment overrides use the daemon's startup environment.
+There is no change detection or hot reload; use `daemon restart --mode cli` or `daemon restart --mode sidecar` to forget the
+selected mode’s cached conversations. Environment overrides use the daemon's startup environment.
 `config` shows settings resolved in the invoking process, not the active conversation.
 Runtime paths (socket, state, logs) remain controlled by the environment variables above.
 
@@ -212,4 +222,4 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-Integration tests use temporary home directories and a mock `agentapi`; no login or Python is required.
+Integration tests use temporary home directories and mock `agentapi` and `agy` executables; no login or Python is required.

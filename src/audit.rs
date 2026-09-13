@@ -41,7 +41,7 @@ fn append(id: &str, event: &str, data: Value) -> Result<()> {
     // One line per event, even when multiple hook processes and the daemon write together.
     file.lock_exclusive()?;
     let entry = json!({"schema_version":1, "id":id, "timestamp":chrono::Utc::now().to_rfc3339(),
-        "event":event, "data":data});
+        "mode":config::mode(), "event":event, "data":data});
     writeln!(file, "{entry}")?;
     Ok(())
 }
@@ -107,7 +107,7 @@ fn summary(entry: &Value, filter: &Filter) -> Option<Value> {
         return None;
     }
     Some(json!({"id":entry["id"], "timestamp":entry["timestamp"],
-            "tool":d["tool"], "conversation_id":d["conversation_id"], "decision":d["output"]["decision"],
+            "mode":entry["mode"], "tool":d["tool"], "conversation_id":d["conversation_id"], "decision":d["output"]["decision"],
             "command":d["command"], "cwd":d["cwd"],
             "reason":d["output"]["reason"], "stage":d["stage"], "duration_ms":d["duration_ms"]}))
 }
@@ -156,12 +156,13 @@ fn print_record(record: &Value, json_output: bool) {
                 .collect()
         };
         println!(
-            "{}  {}  {:9}  {}  stage={}\n  {}",
+            "{}  {}  {:9}  {}  stage={} mode={}\n  {}",
             text("timestamp"),
             text("id"),
             text("decision"),
             text("tool"),
             text("stage"),
+            text("mode"),
             text("reason")
         );
         for key in ["command", "cwd"] {
