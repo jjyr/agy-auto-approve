@@ -62,7 +62,7 @@
 # model = "jev-1.13.0"
 # base_url = "https://api.typesafe.ai/v1"
 # api_key = "your-api-key"
-# probability_threshold = 0.9
+# probability_threshold = 0.85 # Adjust this value until you feel comfortable
 # diagnostic_snapshot = false # Jev only; opt-in capture includes authorization text.
 
 # Optional Jev question replacements; omitted keys keep built-in instructions.
